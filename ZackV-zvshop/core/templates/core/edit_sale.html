@@ -1,0 +1,142 @@
+{% extends 'core/base.html' %}
+{% load static %}
+
+{% block title %}Edit Sale - {{ sale.transaction_id|truncatechars:8 }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <nav aria-label="breadcrumb">
+                    <ol class="breadcrumb mb-1">
+                        <li class="breadcrumb-item"><a href="{% url 'core:dashboard' %}" class="text-decoration-none">Dashboard</a></li>
+                        <li class="breadcrumb-item"><a href="{% url 'core:sales_list' %}" class="text-decoration-none">Sales</a></li>
+                        <li class="breadcrumb-item active" aria-current="page">Edit Sale</li>
+                    </ol>
+                </nav>
+                <h1 class="h3 fw-bold mb-0">Edit Sale #{{ sale.transaction_id|truncatechars:8 }}</h1>
+            </div>
+            <a href="{% url 'core:sale_detail' currency sale.id %}" class="btn btn-outline-secondary">
+                <i class="fas fa-arrow-left me-2"></i>Back to Detail
+            </a>
+        </div>
+
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-transparent border-bottom py-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0 fw-bold"><i class="fas fa-edit me-2 text-primary"></i>Sale Information</h5>
+                    <span class="badge {% if currency == 'USD' %}bg-primary{% elif currency == 'SOS' %}bg-success{% else %}bg-info{% endif %}">
+                        {{ currency }} Sale
+                    </span>
+                </div>
+            </div>
+            <div class="card-body p-4">
+                <form method="post" id="editSaleForm">
+                    {% csrf_token %}
+                    
+                    <!-- Read-Only Sale Info -->
+                    <div class="alert alert-light border mb-4">
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <small class="text-muted d-block fw-bold text-uppercase" style="font-size: 0.7rem;">Date Created</small>
+                                <span class="fw-bold">{{ sale.date_created|date:"M d, Y h:i A" }}</span>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block fw-bold text-uppercase" style="font-size: 0.7rem;">Total Amount</small>
+                                <span class="fw-bold text-primary">
+                                    {% if currency == 'USD' %}${% endif %}{{ sale.total_amount|floatformat:2 }}{% if currency != 'USD' %} {{ currency }}{% endif %}
+                                </span>
+                            </div>
+                            <div class="col-md-4">
+                                <small class="text-muted d-block fw-bold text-uppercase" style="font-size: 0.7rem;">Current Debt</small>
+                                <span class="fw-bold {% if sale.debt_amount > 0 %}text-danger{% else %}text-success{% endif %}">
+                                    {% if currency == 'USD' %}${% endif %}{{ sale.debt_amount|floatformat:2 }}{% if currency != 'USD' %} {{ currency }}{% endif %}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Customer Section -->
+                    <div class="mb-4">
+                        <label class="form-label fw-bold small text-muted">CUSTOMER</label>
+                        <select name="customer" class="form-select bg-light border-0 py-3" required>
+                            {% for cust in customers %}
+                            <option value="{{ cust.id }}" {% if sale.customer.id == cust.id %}selected{% endif %}>
+                                {{ cust.name }} ({{ cust.phone }})
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">Changing the customer will move this debt to the new customer's account.</div>
+                    </div>
+
+                    <!-- Staff Section -->
+                    <div class="mb-4">
+                        <label class="form-label fw-bold small text-muted">STAFF MEMBER</label>
+                        <select name="staff_member" class="form-select bg-light border-0 py-3" required>
+                            {% for staff in staff_members %}
+                            <option value="{{ staff.id }}" {% if sale.staff_member.id == staff.id %}selected{% endif %}>
+                                {{ staff.get_full_name|default:staff.username }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Payment Section -->
+                    <div class="mb-4">
+                        <label class="form-label fw-bold small text-muted">AMOUNT PAID</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-light border-0 fw-bold">
+                                {% if currency == 'USD' %}${% else %}{{ currency }}{% endif %}
+                            </span>
+                            <input type="number" step="0.01" name="amount_paid" class="form-control bg-light border-0 py-3 fw-bold" 
+                                   value="{{ sale.amount_paid }}" required id="amountPaidInput">
+                        </div>
+                        <div class="form-text text-end mt-1" id="debtPreview">
+                            New Debt Calculation: <span class="fw-bold text-dark">--</span>
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-end gap-2 mt-5">
+                        <a href="{% url 'core:sales_list' %}" class="btn btn-light px-4">Cancel</a>
+                        <button type="submit" class="btn btn-primary px-5 fw-bold">
+                            <i class="fas fa-save me-2"></i>Save Changes
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const totalAmount = parseFloat("{{ sale.total_amount|stringformat:'f' }}");
+        const amountPaidInput = document.getElementById('amountPaidInput');
+        const debtPreview = document.getElementById('debtPreview');
+
+        function updateDebtPreview() {
+            const paid = parseFloat(amountPaidInput.value) || 0;
+            const debt = Math.max(0, totalAmount - paid);
+            
+            let currency = '{{ currency }}';
+            let formattedDebt = debt.toFixed(2);
+            
+            if (currency === 'USD') {
+                debtPreview.innerHTML = `New Debt: <span class="fw-bold ${debt > 0 ? 'text-danger' : 'text-success'}">$${formattedDebt}</span>`;
+            } else {
+                debtPreview.innerHTML = `New Debt: <span class="fw-bold ${debt > 0 ? 'text-danger' : 'text-success'}">${formattedDebt} ${currency}</span>`;
+            }
+        }
+
+        amountPaidInput.addEventListener('input', updateDebtPreview);
+        updateDebtPreview(); // Initial call
+        
+        // Ensure no negative values
+        amountPaidInput.addEventListener('change', function() {
+            if (this.value < 0) this.value = 0;
+            updateDebtPreview();
+        });
+    });
+</script>
+{% endblock %}

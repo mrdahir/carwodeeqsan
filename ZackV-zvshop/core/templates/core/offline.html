@@ -1,0 +1,24 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Offline - Carwo Deeqsan{% endblock %}
+
+{% block content %}
+<div class="container h-100 d-flex flex-column justify-content-center align-items-center text-center mt-5 pt-5">
+    <div class="mb-4">
+        <i class="fas fa-wifi text-secondary fa-5x opacity-50"></i>
+    </div>
+    <h2 class="mb-3 fw-bold">You are currently offline</h2>
+    <p class="text-secondary mb-4 col-md-6 mx-auto">
+        It seems you've lost your internet connection.
+        Don't worry, some parts of this app may still work if you've visited them before.
+    </p>
+    <div>
+        <a href="{% url 'core:dashboard' %}" class="btn btn-primary px-4 py-2 me-2">
+            <i class="fas fa-home me-2"></i> Go to Dashboard
+        </a>
+        <button onclick="window.location.reload()" class="btn btn-outline-secondary px-4 py-2">
+            <i class="fas fa-sync-alt me-2"></i> Try Again
+        </button>
+    </div>
+</div>
+{% endblock %}

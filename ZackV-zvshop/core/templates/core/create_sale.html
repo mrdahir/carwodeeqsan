@@ -1,0 +1,1028 @@
+{% extends 'core/base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Iibso Cusub{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Ensure Complete Sale button is visible on mobile */
+    .container-fluid {
+        padding-bottom: 120px !important;
+        /* Extra space for bottom navigation */
+    }
+
+    /* Make sure the form has enough bottom spacing */
+    #saleForm {
+        padding-bottom: 20px;
+    }
+
+    /* Ensure the Complete Sale button card is always visible */
+    .card.mb-5 {
+        margin-bottom: 100px !important;
+        position: relative;
+        z-index: 10;
+    }
+
+    /* Mobile-specific adjustments */
+    @media (max-width: 768px) {
+        .container-fluid {
+            padding-bottom: 140px !important;
+        }
+
+        .card.mb-5 {
+            margin-bottom: 120px !important;
+        }
+
+        /* Make the Complete Sale button more prominent */
+        #completeSaleBtn {
+            min-height: 60px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            box-shadow: 0 4px 20px rgba(40, 167, 69, 0.3);
+        }
+
+        /* Add a floating Complete Sale button for better mobile UX */
+        .floating-complete-btn {
+            position: fixed;
+            bottom: 100px;
+            left: 20px;
+            right: 20px;
+            z-index: 1000;
+            display: none;
+        }
+
+        .floating-complete-btn .btn {
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(40, 167, 69, 0.4);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+
+        /* Better spacing for form elements */
+        .card-body {
+            padding: 16px !important;
+        }
+
+        .search-bar {
+            margin-bottom: 16px !important;
+        }
+
+        /* Improve button spacing */
+        .btn {
+            min-height: 48px !important;
+            font-size: 1rem !important;
+        }
+
+        /* Better list group items */
+        .list-group-item {
+            padding: 16px !important;
+            min-height: 60px !important;
+        }
+    }
+
+    /* Device-specific optimizations */
+    @media (width: 384px) {
+        .card-body {
+            padding: 12px !important;
+        }
+
+        .btn {
+            min-height: 44px !important;
+            font-size: 0.9rem !important;
+        }
+
+        .list-group-item {
+            padding: 12px !important;
+            min-height: 56px !important;
+        }
+    }
+
+    @media (width: 393px) {
+        .card-body {
+            padding: 14px !important;
+        }
+
+        .btn {
+            min-height: 46px !important;
+            font-size: 0.95rem !important;
+        }
+
+        .list-group-item {
+            padding: 14px !important;
+            min-height: 58px !important;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+
+<div class="container-fluid p-0">
+    <!-- Mobile Header -->
+    <div class="mobile-header mobile-only">
+        <div class="d-flex justify-content-between align-items-center">
+            <h1><i class="fas fa-plus-circle"></i> Iibso Cusub</h1>
+            <a href="{% url 'core:sales_list' %}" class="btn btn-outline-light btn-sm">
+                <i class="fas fa-list"></i>
+            </a>
+        </div>
+    </div>
+
+    <!-- Sale Form -->
+    <form method="post" id="saleForm">
+        {% csrf_token %}
+
+        <!-- Customer Selection Card -->
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-user me-2"></i>Macmiil
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-8">
+                        <div class="search-bar">
+                            <i class="fas fa-search text-muted me-2"></i>
+                            <input type="text" id="customerSearch" class="form-control"
+                                placeholder="kuraadi magac ama number" autocomplete="off">
+                        </div>
+                        <div id="customerResults" class="list-group mt-2" style="display: none;">
+                            <!-- Customer results will be populated here -->
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <button type="button" class="btn btn-outline-primary w-100" data-bs-toggle="modal"
+                            data-bs-target="#addCustomerModal">
+                            <i class="fas fa-plus"></i> cusub
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Selected Customer Display -->
+                <div id="selectedCustomer" class="mt-3" style="display: none;">
+                    <div class="alert alert-info">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <div>
+                                <strong id="customerName"></strong><br>
+                                <small id="customerPhone"></small>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="clearCustomer()">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <input type="hidden" name="customer" id="customerId">
+            </div>
+        </div>
+
+        <!-- Currency Selection -->
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-dollar-sign me-2"></i>Lacagta
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="row">
+                        <div class="col-4">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="currency" id="currencyUSD"
+                                    value="USD" checked>
+                                <label class="form-check-label" for="currencyUSD">
+                                    <strong>USD</strong> (US Dollar)
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-4">
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="currency" id="currencyETB" value="ETB">
+                        <label class="form-check-label" for="currencyETB">
+                            <strong>ETB</strong> (Birr)
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="row mt-2">
+                <div class="col-12">
+                    <div class="p-2 bg-light rounded">
+                        <small class="text-muted">
+                            <strong>xadiga sarifka:</strong> 1 USD = {{ currency_settings.usd_to_sos_rate }} SOS | 1 USD
+                            = {{ currency_settings.usd_to_etb_rate }} ETB<br>
+                            <strong>Note:</strong> markad dorato lacagta kale ba lo sarifya
+                        </small>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+</div>
+
+<!-- Products Section -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="fas fa-box me-2"></i>Badeecadaha</span>
+        <span class="badge bg-primary" id="itemCount">0 walxod</span>
+    </div>
+    <div class="card-body">
+        <!-- Product Search -->
+        <div class="search-bar">
+            <i class="fas fa-search text-muted me-2"></i>
+            <div class="input-group">
+                <input type="text" id="productSearch" class="form-control" placeholder="raadi badecadaha..."
+                    autocomplete="off">
+                <button class="btn btn-outline-primary" type="button" onclick="openScannerForCreateSale()">
+                    <i class="fas fa-camera"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Product Results -->
+        <div id="productResults" class="list-group mt-2" style="display: none;">
+            <!-- Product results will be populated here -->
+        </div>
+
+        <!-- Selected Products -->
+        <div id="selectedProducts" class="mt-3">
+            <!-- Selected products will be displayed here -->
+        </div>
+    </div>
+</div>
+
+<!-- Payment Summary -->
+<div class="card">
+    <div class="card-header">
+        <i class="fas fa-credit-card me-2"></i>lacag qabashada
+    </div>
+    <div class="card-body">
+        <div class="row mb-3">
+            <div class="col-6">
+                <label class="form-label">Xadiga guud</label>
+                <div class="input-group">
+                    <span class="input-group-text" id="currencySymbol">$</span>
+                    <input type="number" class="form-control" id="totalAmount" readonly value="0.00" step="0.01">
+                </div>
+            </div>
+            <div class="col-6">
+                <label class="form-label">Lacagta ubixiyay</label>
+                <div class="input-group">
+                    <span class="input-group-text" id="paidCurrencySymbol">$</span>
+                    <input type="number" class="form-control" name="amount_paid" id="amountPaid" value="0.00"
+                        step="0.01" required>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-6">
+                <label class="form-label">Lacagta ku hadhaysa</label>
+                <div class="input-group">
+                    <span class="input-group-text" id="debtCurrencySymbol">$</span>
+                    <input type="number" class="form-control" id="debtAmount" readonly value="0.00" step="0.01">
+                </div>
+            </div>
+            <div class="col-6">
+                <label class="form-label">&nbsp;</label>
+                <div class="d-grid">
+                    <button type="button" class="btn btn-outline-success" onclick="setFullPayment()">
+                        <i class="fas fa-check"></i> walaga wada haya lacagta
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Complete Sale Button -->
+<div class="card mb-5">
+    <div class="card-body">
+        <button type="submit" class="btn btn-success btn-lg w-100" id="completeSaleBtn">
+            <i class="fas fa-check-circle me-2"></i>Dhamastir iibka
+        </button>
+    </div>
+</div>
+</form>
+
+<!-- Floating Complete Sale Button (Mobile Only) -->
+<div class="floating-complete-btn mobile-only">
+    <button type="button" class="btn btn-success btn-lg w-100" id="floatingCompleteBtn"
+        onclick="scrollToCompleteSale()">
+        <i class="fas fa-check-circle me-2"></i>Dhamastir iibka
+    </button>
+</div>
+</div>
+
+<!-- Add Customer Modal -->
+<div class="modal fade" id="addCustomerModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Kudar macmil Cusub</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addCustomerForm">
+                    <div class="mb-3">
+                        <label class="form-label">Magaca</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Number</label>
+                        <input type="tel" class="form-control" name="phone" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Email (looma baahna)</label>
+                        <input type="email" class="form-control" name="email">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Kanoqo</button>
+                <button type="button" class="btn btn-primary" onclick="addCustomer()">Kudar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let selectedProducts = [];
+    let currentCurrency = 'USD';
+    let exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate|default:8000 }}') || 8000;
+    let etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate|default:100 }}') || 100;
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', function () {
+        // Set up currency change handlers
+        document.querySelectorAll('input[name="currency"]').forEach(radio => {
+            radio.addEventListener('change', function () {
+                currentCurrency = this.value;
+                updateCurrencySymbols();
+                convertPricesToCurrency();
+                updateTotals();
+            });
+        });
+
+        // Set up search handlers
+        setupCustomerSearch();
+        setupProductSearch();
+
+        // Set up amount paid handler
+        document.getElementById('amountPaid').addEventListener('input', updateDebtAmount);
+
+        // Auto-focus on customer search
+        document.getElementById('customerSearch').focus();
+
+        // Set up form submission handler
+        document.getElementById('saleForm').addEventListener('submit', handleFormSubmission);
+
+        // Initialize currency conversion
+        convertPricesToCurrency();
+    });
+
+    function setupCustomerSearch() {
+        const searchInput = document.getElementById('customerSearch');
+        const resultsDiv = document.getElementById('customerResults');
+
+        searchInput.addEventListener('input', function () {
+            const query = this.value.trim();
+            if (query.length < 2) {
+                resultsDiv.style.display = 'none';
+                return;
+            }
+
+            fetch(`/api/search-customers/?q=${encodeURIComponent(query)}`)
+                .then(response => response.json())
+                .then(data => {
+                    displayCustomerResults(data);
+                })
+                .catch(error => {
+                    console.error('Error searching customers:', error);
+                    showToast('Error searching customers', 'error');
+                });
+        });
+    }
+
+    function displayCustomerResults(customers) {
+        const resultsDiv = document.getElementById('customerResults');
+
+        if (customers.length === 0) {
+            resultsDiv.innerHTML = '<div class="list-group-item text-muted">No customers found</div>';
+        } else {
+            resultsDiv.innerHTML = customers.map(customer => `
+            <div class="list-group-item list-group-item-action" 
+                 onclick="selectCustomer(${customer.id}, '${customer.name}', '${customer.phone}')">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>${customer.name}</strong><br>
+                        <small class="text-muted">${customer.phone}</small>
+                    </div>
+                    ${customer.total_debt > 0 ? `<span class="badge bg-warning">$${customer.total_debt}</span>` : ''}
+                </div>
+            </div>
+        `).join('');
+        }
+
+        resultsDiv.style.display = 'block';
+    }
+
+    function selectCustomer(id, name, phone) {
+        document.getElementById('customerId').value = id;
+        document.getElementById('customerName').textContent = name;
+        document.getElementById('customerPhone').textContent = phone;
+        document.getElementById('selectedCustomer').style.display = 'block';
+        document.getElementById('customerResults').style.display = 'none';
+        document.getElementById('customerSearch').value = '';
+
+        validateForm();
+    }
+
+    function clearCustomer() {
+        document.getElementById('customerId').value = '';
+        document.getElementById('selectedCustomer').style.display = 'none';
+        validateForm();
+    }
+
+    function setupProductSearch() {
+        const searchInput = document.getElementById('productSearch');
+        const resultsDiv = document.getElementById('productResults');
+
+        searchInput.addEventListener('input', function () {
+            const query = this.value.trim();
+            if (query.length < 2) {
+                resultsDiv.style.display = 'none';
+                return;
+            }
+
+            fetch(`/api/search-products/?q=${encodeURIComponent(query)}`)
+                .then(response => response.json())
+                .then(data => {
+                    displayProductResults(data);
+                })
+                .catch(error => {
+                    console.error('Error searching products:', error);
+                    showToast('Error searching products', 'error');
+                });
+        });
+    }
+
+    // ZXing scanner for create sale flow
+    let createSaleScanner = null;
+    let createSaleSelectedDeviceId = null;
+    function openScannerForCreateSale() {
+        const modalEl = document.getElementById('barcodeScannerModalCreateSale');
+        if (!modalEl) return;
+        // Prevent re-opening if already visible
+        if (modalEl.classList.contains('show')) return;
+        const modal = new bootstrap.Modal(modalEl, { backdrop: true, focus: true, keyboard: true });
+        modal.show();
+        // Preflight permission request to trigger browser prompt
+        setTimeout(() => {
+            requestCameraPermission()
+                .then(() => startCreateSaleScanner())
+                .catch(err => {
+                    showToast('Camera permission denied. Enable camera in site settings.', 'error');
+                });
+        }, 300);
+    }
+
+    function startCreateSaleScanner() {
+        const videoEl = document.getElementById('barcodeVideoCreateSale');
+        if (!window.ZXing) return;
+        if (createSaleScanner) {
+            stopCreateSaleScanner();
+        }
+        createSaleScanner = new ZXing.BrowserMultiFormatReader();
+        createSaleScanner.listVideoInputDevices()
+            .then(devices => {
+                populateCreateSaleCameras(devices);
+                let deviceId = createSaleSelectedDeviceId;
+                if (!deviceId) {
+                    // Prefer back/environ cameras if labels are available
+                    const backCam = devices.find(d => (d.label || '').toLowerCase().match(/back|rear|environment/));
+                    deviceId = backCam ? backCam.deviceId : (devices[devices.length - 1] && devices[devices.length - 1].deviceId);
+                }
+                if (!deviceId) return;
+                createSaleScanner.decodeFromVideoDevice(deviceId, videoEl, (result, err) => {
+                    if (result) {
+                        onCreateSaleBarcodeScanned(result.getText());
+                    }
+                });
+            })
+            .catch(err => console.error(err));
+    }
+
+    function stopCreateSaleScanner() {
+        try { if (createSaleScanner) createSaleScanner.reset(); } catch (e) { }
+    }
+
+    document.addEventListener('hidden.bs.modal', function (event) {
+        if (event.target && event.target.id === 'barcodeScannerModalCreateSale') {
+            stopCreateSaleScanner();
+            // Return focus to the product search field to avoid focus trapped in aria-hidden node
+            const ps = document.getElementById('productSearch');
+            if (ps) ps.focus();
+        }
+    });
+
+    function onCreateSaleBarcodeScanned(code) {
+        stopCreateSaleScanner();
+        const modalEl = document.getElementById('barcodeScannerModalCreateSale');
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        // Blur active element before hiding to avoid aria-hidden focus warning
+        try { if (document.activeElement) document.activeElement.blur(); } catch (e) { }
+        if (modal) {
+            // Hide on next tick after blur
+            setTimeout(() => modal.hide(), 0);
+        }
+        fetch(`{% url 'core:api_lookup_by_barcode' %}?barcode=${encodeURIComponent(code)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    const p = data.product;
+                    addProductToSale(p.id, p.name, p.selling_price, p.current_stock);
+                    showToast('Product added by barcode', 'success');
+                } else {
+                    showToast(data.error || 'Product not found', 'error');
+                }
+            })
+            .catch(() => showToast('Failed to look up product by barcode', 'error'));
+    }
+
+    // Helper to explicitly trigger permission prompt
+    function requestCameraPermission() {
+        const constraints = { video: { facingMode: { ideal: 'environment' } } };
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            return Promise.reject(new Error('Camera API not supported'));
+        }
+        return navigator.mediaDevices.getUserMedia(constraints)
+            .then(stream => {
+                try { stream.getTracks().forEach(t => t.stop()); } catch (e) { }
+            });
+    }
+
+    function populateCreateSaleCameras(devices) {
+        const sel = document.getElementById('createSaleCameraSelect');
+        if (!sel) return;
+        // Only populate once per open
+        sel.innerHTML = '';
+        devices.forEach((d, idx) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || `Camera ${idx + 1}`;
+            sel.appendChild(opt);
+        });
+        // Preselect preferred camera
+        const backCam = devices.find(d => (d.label || '').toLowerCase().match(/back|rear|environment/));
+        createSaleSelectedDeviceId = createSaleSelectedDeviceId || (backCam ? backCam.deviceId : (devices[devices.length - 1] && devices[devices.length - 1].deviceId));
+        if (createSaleSelectedDeviceId) sel.value = createSaleSelectedDeviceId;
+        sel.onchange = function () {
+            createSaleSelectedDeviceId = this.value;
+            startCreateSaleScanner();
+        };
+    }
+
+    function displayProductResults(products) {
+        const resultsDiv = document.getElementById('productResults');
+
+        if (products.length === 0) {
+            resultsDiv.innerHTML = '<div class="list-group-item text-muted">No products found</div>';
+        } else {
+            resultsDiv.innerHTML = products.map(product => {
+                const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
+                const sosPrice = product.selling_price * exchangeRate;
+
+                return `
+            <div class="list-group-item list-group-item-action" 
+                 onclick="addProductToSale(${product.id}, '${product.name}', ${product.selling_price}, ${product.current_stock})">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <strong>${product.name}</strong><br>
+                        <small class="text-muted">${product.brand} • ${product.category}</small>
+                    </div>
+                    <div class="text-end">
+                        <div class="fw-bold">$${product.selling_price}</div>
+                        <div class="text-muted">${sosPrice.toFixed(0)} SOS</div>
+                        <small class="text-muted">Stock: ${product.current_stock}</small>
+                    </div>
+                </div>
+            </div>
+            `;
+            }).join('');
+        }
+
+        resultsDiv.style.display = 'block';
+    }
+
+    function addProductToSale(id, name, price, stock) {
+        // Check if product already exists
+        const existingIndex = selectedProducts.findIndex(p => p.id === id);
+
+        if (existingIndex >= 0) {
+            // Increment quantity if stock allows
+            if (selectedProducts[existingIndex].quantity < stock) {
+                selectedProducts[existingIndex].quantity++;
+            } else {
+                showToast(`No more stock available for ${name}. Available: ${stock}`, 'error');
+                return;
+            }
+        } else {
+            // Add new product
+            const newProduct = {
+                id: id,
+                name: name,
+                price: price,
+                stock: stock,
+                quantity: 1,
+                priceInCurrency: price,
+                originalPrice: price
+            };
+
+            // Convert price if SOS is selected
+            if (currentCurrency === 'SOS') {
+                const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
+                newProduct.priceInCurrency = price * exchangeRate;
+            } else if (currentCurrency === 'ETB') {
+                const etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate }}') || 100;
+                newProduct.priceInCurrency = price * etbExchangeRate;
+            }
+
+            selectedProducts.push(newProduct);
+        }
+
+        updateProductDisplay();
+        updateTotals();
+        document.getElementById('productSearch').value = '';
+        document.getElementById('productResults').style.display = 'none';
+        validateForm();
+    }
+
+    function updateProductDisplay() {
+        const container = document.getElementById('selectedProducts');
+        const countBadge = document.getElementById('itemCount');
+
+        if (selectedProducts.length === 0) {
+            container.innerHTML = '<div class="text-muted text-center py-3">No products added</div>';
+            countBadge.textContent = '0 items';
+            return;
+        }
+
+        container.innerHTML = selectedProducts.map((product, index) => {
+            const priceInCurrency = product.priceInCurrency || product.price;
+            const totalInCurrency = (priceInCurrency * product.quantity);
+            let currencySymbol = '$';
+            if (currentCurrency === 'SOS') currencySymbol = 'So.Sh';
+            if (currentCurrency === 'ETB') currencySymbol = 'Birr';
+            const originalPrice = product.originalPrice || product.price;
+
+            return `
+        <div class="card mb-2">
+            <div class="card-body p-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="flex-grow-1">
+                        <div class="fw-bold">${product.name}</div>
+                        <div class="text-muted">
+                            ${currencySymbol}${priceInCurrency.toFixed(2)} each
+                            ${currentCurrency !== 'USD' ? `<br><small class="text-muted">($${originalPrice} USD)</small>` : ''}
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" 
+                                onclick="updateQuantity(${index}, -1)" ${product.quantity <= 1 ? 'disabled' : ''}>
+                            <i class="fas fa-minus"></i>
+                        </button>
+                        <span class="fw-bold" style="min-width: 30px; text-align: center;">${product.quantity}</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" 
+                                onclick="updateQuantity(${index}, 1)" ${product.quantity >= product.stock ? 'disabled' : ''}>
+                            <i class="fas fa-plus"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeProduct(${index})">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="text-end mt-2">
+                    <strong>Total: ${currencySymbol}${totalInCurrency.toFixed(2)}</strong>
+                    ${currentCurrency !== 'USD' ? `<br><small class="text-muted">($${(originalPrice * product.quantity).toFixed(2)} USD)</small>` : ''}
+                </div>
+            </div>
+        </div>
+        `;
+        }).join('');
+
+        countBadge.textContent = `${selectedProducts.length} item${selectedProducts.length !== 1 ? 's' : ''}`;
+    }
+
+    function updateQuantity(index, change) {
+        const product = selectedProducts[index];
+        const newQuantity = product.quantity + change;
+
+        if (newQuantity >= 1 && newQuantity <= product.stock) {
+            product.quantity = newQuantity;
+            updateProductDisplay();
+            updateTotals();
+        } else if (newQuantity > product.stock) {
+            showToast(`Cannot exceed available stock of ${product.stock}`, 'error');
+        }
+    }
+
+    function removeProduct(index) {
+        selectedProducts.splice(index, 1);
+        updateProductDisplay();
+        updateTotals();
+        validateForm();
+    }
+
+    function updateTotals() {
+        const total = selectedProducts.reduce((sum, product) => {
+            const priceInCurrency = product.priceInCurrency || product.price;
+            return sum + (priceInCurrency * product.quantity);
+        }, 0);
+        document.getElementById('totalAmount').value = total.toFixed(2);
+        updateDebtAmount();
+    }
+
+    function updateDebtAmount() {
+        const total = parseFloat(document.getElementById('totalAmount').value) || 0;
+        const paid = parseFloat(document.getElementById('amountPaid').value) || 0;
+        const debt = Math.max(0, total - paid);
+        document.getElementById('debtAmount').value = debt.toFixed(2);
+    }
+
+    function setFullPayment() {
+        const total = parseFloat(document.getElementById('totalAmount').value) || 0;
+        document.getElementById('amountPaid').value = total.toFixed(2);
+        updateDebtAmount();
+    }
+
+    function updateCurrencySymbols() {
+        let symbol = '$';
+        if (currentCurrency === 'SOS') {
+            symbol = 'So.Sh';
+        } else if (currentCurrency === 'ETB') {
+            symbol = 'Birr';
+        }
+        document.getElementById('currencySymbol').textContent = symbol;
+        document.getElementById('paidCurrencySymbol').textContent = symbol;
+        document.getElementById('debtCurrencySymbol').textContent = symbol;
+    }
+
+    function convertPricesToCurrency() {
+        // Get exchange rate from the page
+        const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
+
+        // Update all product prices based on selected currency
+        // Update all product prices based on selected currency
+        selectedProducts.forEach(product => {
+            if (currentCurrency === 'SOS') {
+                // Convert USD price to SOS
+                product.priceInCurrency = product.price * exchangeRate;
+                product.originalPrice = product.price; // Keep original USD price
+            } else if (currentCurrency === 'ETB') {
+                // Convert USD price to ETB
+                product.priceInCurrency = product.price * etbExchangeRate;
+                product.originalPrice = product.price; // Keep original USD price
+            } else {
+                // Use original USD price
+                product.priceInCurrency = product.price;
+                product.originalPrice = product.price;
+            }
+        });
+
+        // Update display
+        updateProductDisplay();
+    }
+
+    function validateForm() {
+        // Validation moved to handleFormSubmission
+        const submitBtn = document.getElementById('completeSaleBtn');
+        const floatingBtn = document.getElementById('floatingCompleteBtn');
+        if (submitBtn) submitBtn.disabled = false;
+        if (floatingBtn) floatingBtn.disabled = false;
+    }
+
+    function addCustomer() {
+        const form = document.getElementById('addCustomerForm');
+        const formData = new FormData(form);
+
+        fetch('/api/create-customer/', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                name: formData.get('name'),
+                phone: formData.get('phone'),
+                email: formData.get('email')
+            })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    selectCustomer(data.customer.id, data.customer.name, data.customer.phone);
+                    bootstrap.Modal.getInstance(document.getElementById('addCustomerModal')).hide();
+                    form.reset();
+                    showToast('Customer added successfully', 'success');
+                } else {
+                    showToast(data.error || 'Error adding customer', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error adding customer:', error);
+                showToast('Error adding customer', 'error');
+            });
+    }
+
+    // FIXED FORM SUBMISSION HANDLER
+    function handleFormSubmission(e) {
+        e.preventDefault();
+
+        // Perform validation here
+        const customerId = document.getElementById('customerId').value;
+        if (!customerId) {
+            showToast('Please select a customer first', 'error');
+            document.getElementById('customerSearch').focus();
+            return;
+        }
+
+        if (selectedProducts.length === 0) {
+            showToast('Please add at least one product', 'error');
+            document.getElementById('productSearch').focus();
+            return;
+        }
+
+        const submitBtn = document.getElementById('completeSaleBtn');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Processing...';
+
+        // Prepare form data
+        const formData = new FormData();
+        formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value);
+        formData.append('customer', document.getElementById('customerId').value);
+        formData.append('currency', document.querySelector('input[name="currency"]:checked').value);
+        formData.append('amount_paid', document.getElementById('amountPaid').value);
+
+        // Add selected products with converted prices
+        selectedProducts.forEach((product, index) => {
+            formData.append(`products[${index}][id]`, product.id);
+            formData.append(`products[${index}][quantity]`, product.quantity);
+            // Send the converted unit price for SOS and ETB currencies
+            if (currentCurrency === 'SOS' || currentCurrency === 'ETB') {
+                formData.append(`products[${index}][unit_price]`, product.priceInCurrency);
+            }
+        });
+
+        // Submit via fetch
+        fetch(window.location.href, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    showToast('Sale completed successfully!', 'success');
+                    // Redirect to dashboard after successful sale
+                    setTimeout(() => {
+                        window.location.href = '{% url "core:dashboard" %}';
+                    }, 2000);
+                } else {
+                    throw new Error(data.error || 'Error completing sale');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showToast('Error: ' + error.message, 'error');
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+            });
+    }
+
+    // ADD THIS showToast FUNCTION:
+    function showToast(message, type = 'info') {
+        // Create a simple toast notification
+        const toast = document.createElement('div');
+        toast.className = `alert alert-${type} position-fixed top-0 end-0 m-3`;
+        toast.style.zIndex = '9999';
+        toast.style.minWidth = '300px';
+        toast.innerHTML = message;
+        document.body.appendChild(toast);
+
+        // Remove after 3 seconds
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.remove();
+            }
+        }, 3000);
+    }
+
+    // Floating button functionality
+    function scrollToCompleteSale() {
+        const completeSaleCard = document.querySelector('.card.mb-5');
+        if (completeSaleCard) {
+            completeSaleCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    // Show/hide floating button based on scroll position
+    function handleScroll() {
+        const floatingBtn = document.querySelector('.floating-complete-btn');
+        const completeSaleCard = document.querySelector('.card.mb-5');
+
+        if (floatingBtn && completeSaleCard) {
+            const cardRect = completeSaleCard.getBoundingClientRect();
+            const isCardVisible = cardRect.top < window.innerHeight && cardRect.bottom > 0;
+
+            if (isCardVisible) {
+                floatingBtn.style.display = 'none';
+            } else {
+                floatingBtn.style.display = 'block';
+            }
+        }
+    }
+
+    // Initialize scroll listener
+    document.addEventListener('DOMContentLoaded', function () {
+        window.addEventListener('scroll', handleScroll);
+        handleScroll(); // Initial check
+    });
+</script>
+<!-- Scanner Modal for Create Sale -->
+<div class="modal fade" id="barcodeScannerModalCreateSale" tabindex="-1" role="dialog" aria-modal="true"
+    aria-hidden="true" aria-labelledby="barcodeScannerCreateSaleTitle">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="barcodeScannerCreateSaleTitle"><i class="fas fa-barcode me-2"></i>Scan
+                    Product</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="ratio ratio-4x3 border rounded">
+                    <video id="barcodeVideoCreateSale" autoplay muted playsinline></video>
+                </div>
+                <small class="text-muted d-block mt-2">Align the barcode within the frame.</small>
+            </div>
+            <div class="modal-footer">
+                <div class="me-auto d-flex align-items-center gap-2">
+                    <label for="createSaleCameraSelect" class="form-label mb-0"><small>Camera</small></label>
+                    <select id="createSaleCameraSelect" class="form-select form-select-sm"
+                        style="width:auto; min-width: 160px;"></select>
+                </div>
+                <button type="button" class="btn btn-outline-secondary" onclick="startCreateSaleScanner()"><i
+                        class="fas fa-sync-alt me-2"></i>Restart</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="https://unpkg.com/@zxing/library@latest"></script>
+<script>
+    // ARIA and focus management for Create Sale scanner modal
+    (() => {
+        const modalEl = document.getElementById('barcodeScannerModalCreateSale');
+        let lastTrigger = null;
+        if (!modalEl) return;
+        modalEl.addEventListener('show.bs.modal', () => {
+            // Remember trigger and ensure modal is not aria-hidden while open
+            lastTrigger = document.activeElement;
+            modalEl.removeAttribute('aria-hidden');
+            modalEl.setAttribute('aria-modal', 'true');
+            modalEl.setAttribute('role', 'dialog');
+        });
+        modalEl.addEventListener('shown.bs.modal', () => {
+            // Move focus inside modal (close button preferred)
+            const closeBtn = modalEl.querySelector('.btn-close');
+            if (closeBtn) {
+                try { closeBtn.focus(); } catch (e) { }
+            } else {
+                try { modalEl.focus(); } catch (e) { }
+            }
+        });
+        modalEl.addEventListener('hide.bs.modal', () => {
+            // Blur any focused element inside the modal prior to hiding
+            try { if (document.activeElement) document.activeElement.blur(); } catch (e) { }
+        });
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            // When closed, set aria-hidden, remove aria-modal, and restore focus to trigger
+            modalEl.setAttribute('aria-hidden', 'true');
+            modalEl.removeAttribute('aria-modal');
+            try { if (lastTrigger && typeof lastTrigger.focus === 'function') lastTrigger.focus(); } catch (e) { }
+        });
+    })();
+</script>
+{% endblock %}

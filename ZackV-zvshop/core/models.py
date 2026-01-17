@@ -1,0 +1,1221 @@
+from django.db import models
+from django.contrib.auth.models import AbstractUser
+from django.core.validators import MinValueValidator
+from django.db.models import Sum
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+import uuid
+
+
+class User(AbstractUser):
+    """Custom user model with role-based permissions"""
+    phone = models.CharField(max_length=15, blank=True, null=True)
+    can_sell = models.BooleanField(default=False, verbose_name="Can Make Sales")
+    can_restock = models.BooleanField(default=False, verbose_name="Can Restock Inventory")
+    is_active_staff = models.BooleanField(default=True, verbose_name="Active Staff Member")
+    date_created = models.DateTimeField(auto_now_add=True)
+    date_updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Staff Member"
+        verbose_name_plural = "Staff Members"
+
+    def __str__(self):
+        return f"{self.get_full_name()} ({self.username})"
+
+
+class CurrencySettings(models.Model):
+    """Global currency exchange rate settings"""
+    usd_to_sos_rate = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=8000.00,
+        verbose_name="USD to SOS Exchange Rate"
+    )
+    sos_to_usd_rate = models.DecimalField(
+        max_digits=10, 
+        decimal_places=6, 
+        default=0.000125,
+        verbose_name="SOS to USD Exchange Rate"
+    )
+    usd_to_etb_rate = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=100.00,
+        verbose_name="USD to ETB Exchange Rate"
+    )
+    etb_to_usd_rate = models.DecimalField(
+        max_digits=10, 
+        decimal_places=6, 
+        default=0.01,
+        verbose_name="ETB to USD Exchange Rate"
+    )
+    date_updated = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+
+    class Meta:
+        verbose_name = "Currency Setting"
+        verbose_name_plural = "Currency Settings"
+
+    def __str__(self):
+        return f"1 USD = {self.usd_to_sos_rate} SOS"
+
+    def save(self, *args, **kwargs):
+        # Auto-calculate SOS to USD rate when USD to SOS rate is updated
+        if self.usd_to_sos_rate > 0:
+            self.sos_to_usd_rate = Decimal('1.000000') / self.usd_to_sos_rate
+        if self.usd_to_etb_rate > 0:
+            self.etb_to_usd_rate = Decimal('1.000000') / self.usd_to_etb_rate
+        super().save(*args, **kwargs)
+
+    def convert_usd_to_sos(self, usd_amount):
+        """Convert USD amount to SOS"""
+        return usd_amount * self.usd_to_sos_rate
+    
+    def convert_usd_to_etb(self, usd_amount):
+        """Convert USD amount to ETB"""
+        return usd_amount * self.usd_to_etb_rate
+
+    def convert_sos_to_usd(self, sos_amount):
+        """Convert SOS amount to USD"""
+        if self.usd_to_sos_rate > 0:
+            return sos_amount / self.usd_to_sos_rate
+        return Decimal('0.00')
+
+    def convert_etb_to_usd(self, etb_amount):
+        """Convert ETB amount to USD"""
+        if self.usd_to_etb_rate > 0:
+            return etb_amount / self.usd_to_etb_rate
+        return Decimal('0.00')
+
+
+class Category(models.Model):
+    """Product categories"""
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True)
+    date_created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Category"
+        verbose_name_plural = "Categories"
+
+    def __str__(self):
+        return self.name
+
+
+class Product(models.Model):
+    """Product model with purchase price hidden from non-superusers"""
+    name = models.CharField(max_length=200)
+    brand = models.CharField(max_length=100)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE)
+    barcode = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    purchase_price = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        verbose_name="Purchase Price (USD)"
+    )
+    selling_price = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        verbose_name="Selling Price (USD)"
+    )
+    current_stock = models.PositiveIntegerField(default=0)
+    low_stock_threshold = models.PositiveIntegerField(default=5)
+    date_added = models.DateTimeField(auto_now_add=True)
+    date_updated = models.DateTimeField(auto_now=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Product"
+        verbose_name_plural = "Products"
+
+    def __str__(self):
+        return f"{self.brand} - {self.name}"
+
+    @property
+    def profit_margin(self):
+        """Calculate profit margin (superuser only)"""
+        return self.selling_price - self.purchase_price
+
+    @property
+    def is_low_stock(self):
+        """Check if product is low on stock"""
+        return self.current_stock <= self.low_stock_threshold
+
+
+class Customer(models.Model):
+    """Customer model with separate USD and SOS debt tracking"""
+    name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=15, unique=True)
+    total_debt_usd = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total debt in USD")
+    total_debt_sos = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total debt in SOS")
+    total_debt_etb = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total debt in ETB")
+    date_created = models.DateTimeField(auto_now_add=True)
+    last_purchase_date = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Customer"
+        verbose_name_plural = "Customers"
+
+    def __str__(self):
+        return f"{self.name} ({self.phone})"
+
+    def update_debt(self, amount, currency='USD'):
+        """Update customer's debt in the specified currency"""
+        if currency == 'USD':
+            self.total_debt_usd += amount
+            # Ensure debt doesn't go negative
+            if self.total_debt_usd < 0:
+                self.total_debt_usd = Decimal('0.00')
+        elif currency == 'SOS':
+            self.total_debt_sos += amount
+            # Ensure debt doesn't go negative
+            if self.total_debt_sos < 0:
+                self.total_debt_sos = Decimal('0.00')
+        elif currency == 'ETB':
+            self.total_debt_etb += amount
+            # Ensure debt doesn't go negative
+            if self.total_debt_etb < 0:
+                self.total_debt_etb = Decimal('0.00')
+        
+        self.save()
+    
+    @property
+    def total_debt(self):
+        """Backward compatibility property - returns SOS debt (base currency)"""
+        return self.total_debt_sos
+    
+    def get_debt_in_currency(self, currency='USD'):
+        """Get customer's debt in specified currency"""
+        if currency == 'USD':
+            return self.total_debt_usd
+        elif currency == 'SOS':
+            return self.total_debt_sos
+        elif currency == 'ETB':
+            return self.total_debt_etb
+        return Decimal('0.00')
+    
+    def get_total_debt_usd_equivalent(self):
+        """Get total debt converted to USD equivalent"""
+        currency_settings = CurrencySettings.objects.first()
+        if currency_settings:
+            sos_usd_equivalent = currency_settings.convert_sos_to_usd(self.total_debt_sos)
+            etb_usd_equivalent = currency_settings.convert_etb_to_usd(self.total_debt_etb)
+            return self.total_debt_usd + sos_usd_equivalent + etb_usd_equivalent
+        return self.total_debt_usd
+    
+    def get_debt_status(self):
+        """Get human-readable debt status based on USD equivalent"""
+        total_usd = self.get_total_debt_usd_equivalent()
+        if total_usd == 0:
+            return "No Debt"
+        elif total_usd <= 50:
+            return "Low Debt"
+        elif total_usd <= 200:
+            return "Medium Debt"
+        else:
+            return "High Debt"
+    
+    @classmethod
+    def get_total_debt_usd(cls):
+        """Get total USD debt across all customers"""
+        return cls.objects.aggregate(total=Sum('total_debt_usd'))['total'] or Decimal('0.00')
+    
+    @classmethod
+    def get_total_debt_sos(cls):
+        """Get total SOS debt across all customers"""
+        return cls.objects.aggregate(total=Sum('total_debt_sos'))['total'] or Decimal('0.00')
+    
+    @classmethod
+    def get_total_debt_etb(cls):
+        """Get total ETB debt across all customers"""
+        return cls.objects.aggregate(total=Sum('total_debt_etb'))['total'] or Decimal('0.00')
+    
+    @classmethod
+    def get_total_debt(cls):
+        """Backward compatibility method - returns total SOS debt (base currency)"""
+        return cls.get_total_debt_sos()
+    
+    @classmethod
+    def get_customers_with_debt(cls):
+        """Get customers who have debt in either currency"""
+        from django.db.models import Q
+        return cls.objects.filter(
+            Q(total_debt_usd__gt=0) | Q(total_debt_sos__gt=0) | Q(total_debt_etb__gt=0)
+        ).order_by('-total_debt_usd', '-total_debt_sos', '-total_debt_etb')
+
+
+class SaleUSD(models.Model):
+    """USD Sales transaction model - completely separate from SOS"""
+    transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    
+    # All amounts stored in USD
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total amount in USD")
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Amount paid in USD")
+    debt_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Debt amount in USD")
+    
+    date_created = models.DateTimeField(auto_now_add=True)
+    is_completed = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "USD Sale"
+        verbose_name_plural = "USD Sales"
+
+    def __str__(self):
+        return f"USD Sale {self.transaction_id} - {self.customer.name}"
+
+    def calculate_total(self):
+        """Calculate and update the total amount for this sale"""
+        total = self.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
+        self.total_amount = total
+        # Debt will be recalculated in save() method
+        self.save()
+        return total
+    
+    def save(self, *args, **kwargs):
+        """Override save to automatically recalculate debt_amount"""
+        # Recalculate debt_amount whenever amount_paid or total_amount changes
+        if self.total_amount is not None and self.amount_paid is not None:
+            self.debt_amount = max(Decimal('0.00'), self.total_amount - self.amount_paid)
+        super().save(*args, **kwargs)
+
+
+class SaleSOS(models.Model):
+    """SOS Sales transaction model - completely separate from USD"""
+    transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    
+    # All amounts stored in SOS
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total amount in SOS")
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Amount paid in SOS")
+    debt_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Debt amount in SOS")
+    
+    date_created = models.DateTimeField(auto_now_add=True)
+    is_completed = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "SOS Sale"
+        verbose_name_plural = "SOS Sales"
+
+    def __str__(self):
+        return f"SOS Sale {self.transaction_id} - {self.customer.name}"
+
+    def calculate_total(self):
+        """Calculate and update the total amount for this sale"""
+        total = self.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
+        self.total_amount = total
+        # Debt will be recalculated in save() method
+        self.save()
+        return total
+    
+    def save(self, *args, **kwargs):
+        """Override save to automatically recalculate debt_amount"""
+        # Recalculate debt_amount whenever amount_paid or total_amount changes
+        if self.total_amount is not None and self.amount_paid is not None:
+            self.debt_amount = max(Decimal('0.00'), self.total_amount - self.amount_paid)
+        super().save(*args, **kwargs)
+
+
+class SaleETB(models.Model):
+    """ETB Sales transaction model - completely separate from USD/SOS"""
+    transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    
+    # All amounts stored in ETB
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total amount in ETB")
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Amount paid in ETB")
+    debt_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Debt amount in ETB")
+    
+    # Store exchange rate at time of sale for accurate profit calculation
+    exchange_rate_at_sale = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=185.00,
+        help_text="USD to ETB exchange rate at time of sale"
+    )
+    
+    date_created = models.DateTimeField(auto_now_add=True)
+    is_completed = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "ETB Sale"
+        verbose_name_plural = "ETB Sales"
+
+    def __str__(self):
+        return f"ETB Sale {self.transaction_id} - {self.customer.name}"
+
+    def calculate_total(self):
+        """Calculate and update the total amount for this sale"""
+        total = self.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
+        self.total_amount = total
+        # Debt will be recalculated in save() method
+        self.save()
+        return total
+    
+    def save(self, *args, **kwargs):
+        """Override save to automatically recalculate debt_amount"""
+        # Recalculate debt_amount whenever amount_paid or total_amount changes
+        if self.total_amount is not None and self.amount_paid is not None:
+            self.debt_amount = max(Decimal('0.00'), self.total_amount - self.amount_paid)
+        super().save(*args, **kwargs)
+
+
+# Legacy Sale model for backward compatibility
+class Sale(models.Model):
+    """Legacy Sales transaction model - kept for backward compatibility"""
+    CURRENCY_CHOICES = [
+        ('USD', 'US Dollar'),
+        ('SOS', 'Somaliland Shilling'),
+        ('ETB', 'Ethiopian Birr'),
+    ]
+    
+    transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='USD')
+    
+    # Store amounts in original currency
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total amount in original currency")
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Amount paid in original currency")
+    debt_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Debt amount in original currency")
+    
+    exchange_rate = models.DecimalField(max_digits=10, decimal_places=2)
+    date_created = models.DateTimeField(auto_now_add=True)
+    is_completed = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name = "Sale"
+        verbose_name_plural = "Sales"
+
+    def __str__(self):
+        return f"Sale {self.transaction_id} - {self.customer.name}"
+
+    def calculate_total(self):
+        """Calculate and update the total amount for this sale"""
+        total = self.items.aggregate(total=Sum('total_price'))['total'] or 0
+        self.total_amount = total
+        self.debt_amount = max(Decimal('0.00'), total - self.amount_paid)
+        
+        self.save()
+        return total
+    
+    # Note: No longer converting to SOS as base currency - amounts are stored in original currency
+    
+    def get_amount_in_currency(self, target_currency):
+        """Get the total amount in the specified currency"""
+        currency_settings = CurrencySettings.objects.first()
+        if not currency_settings:
+            return self.total_amount
+        
+        if target_currency == 'USD':
+            return currency_settings.convert_sos_to_usd(self.total_amount)
+        return self.total_amount
+    
+    def get_paid_amount_in_currency(self, target_currency):
+        """Get the paid amount in the specified currency"""
+        currency_settings = CurrencySettings.objects.first()
+        if not currency_settings:
+            return self.amount_paid
+        
+        if target_currency == 'USD':
+            return currency_settings.convert_sos_to_usd(self.amount_paid)
+        return self.amount_paid
+    
+    def get_debt_amount_in_currency(self, target_currency):
+        """Get the debt amount in the specified currency"""
+        currency_settings = CurrencySettings.objects.first()
+        if not currency_settings:
+            return self.debt_amount
+        
+        if target_currency == 'USD':
+            return currency_settings.convert_sos_to_usd(self.debt_amount)
+        return self.debt_amount
+    
+    @property
+    def total_amount_sos(self):
+        """Get total amount in SOS"""
+        if self.currency == 'SOS':
+            return self.total_amount
+        else:
+            # Convert USD to SOS
+            currency_settings = CurrencySettings.objects.first()
+            if currency_settings:
+                return currency_settings.convert_usd_to_sos(self.total_amount)
+            return Decimal('0.00')
+    
+    @property
+    def total_amount_usd(self):
+        """Get total amount in USD"""
+        if self.currency == 'USD':
+            return self.total_amount
+        else:
+            # Convert SOS to USD
+            currency_settings = CurrencySettings.objects.first()
+            if currency_settings:
+                return currency_settings.convert_sos_to_usd(self.total_amount)
+            return Decimal('0.00')
+    
+    @property
+    def amount_paid_sos(self):
+        """Get amount paid in SOS"""
+        if self.currency == 'SOS':
+            return self.amount_paid
+        else:
+            # Convert USD to SOS
+            currency_settings = CurrencySettings.objects.first()
+            if currency_settings:
+                return currency_settings.convert_usd_to_sos(self.amount_paid)
+            return Decimal('0.00')
+    
+    @property
+    def amount_paid_usd(self):
+        """Get amount paid in USD"""
+        if self.currency == 'USD':
+            return self.amount_paid
+        else:
+            # Convert SOS to USD
+            currency_settings = CurrencySettings.objects.first()
+            if currency_settings:
+                return currency_settings.convert_sos_to_usd(self.amount_paid)
+            return Decimal('0.00')
+    
+    @property
+    def debt_amount_sos(self):
+        """Get debt amount in SOS"""
+        if self.currency == 'SOS':
+            return self.debt_amount
+        else:
+            # Convert USD to SOS
+            currency_settings = CurrencySettings.objects.first()
+            if currency_settings:
+                return currency_settings.convert_usd_to_sos(self.debt_amount)
+            return Decimal('0.00')
+    
+    @property
+    def debt_amount_usd(self):
+        """Get debt amount in USD"""
+        if self.currency == 'USD':
+            return self.debt_amount
+        else:
+            # Convert SOS to USD
+            currency_settings = CurrencySettings.objects.first()
+            if currency_settings:
+                return currency_settings.convert_sos_to_usd(self.debt_amount)
+            return Decimal('0.00')
+    
+    def get_payment_status(self):
+        """Get human-readable payment status"""
+        if self.debt_amount == 0:
+            return "Fully Paid"
+        elif self.amount_paid == 0:
+            return "No Payment"
+        else:
+            return f"Partial Payment (${self.amount_paid})"
+
+    def save(self, *args, **kwargs):
+        is_new = self.pk is None
+        print(f"Saving sale: {self.transaction_id}, is_new: {is_new}")
+        
+        # Calculate debt amount before saving
+        self.debt_amount = max(0, self.total_amount - self.amount_paid)
+        
+        # Save the sale first
+        super().save(*args, **kwargs)
+        print(f"Sale saved with ID: {self.id}")
+        
+        # Only process customer updates for new sales
+        if is_new:
+            print("Processing new sale customer updates...")
+            # Update customer last purchase date
+            self.customer.last_purchase_date = self.date_created
+            self.customer.save()
+            print("Customer last purchase date updated")
+            
+            # Note: Customer debt and inventory updates are now handled in the create_sale view
+            # to ensure proper order of operations
+        else:
+            print("This is an existing sale, skipping customer updates")
+
+class SaleItemUSD(models.Model):
+    """Individual items in a USD sale"""
+    sale = models.ForeignKey(SaleUSD, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Unit price in USD")
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total price in USD")
+
+    class Meta:
+        verbose_name = "USD Sale Item"
+        verbose_name_plural = "USD Sale Items"
+
+    def __str__(self):
+        return f"{self.product.name} x{self.quantity} (USD)"
+
+    def get_profit_usd(self):
+        """Calculate profit for this sale item in USD using Decimal for precision"""
+        try:
+            # Use the new base and premium profit methods that include overpayments
+            base_profit_usd = self.get_base_profit_usd()
+            premium_profit_usd = self.get_premium_profit_usd()
+            
+            # Total profit = base profit + premium profit
+            total_profit_usd = base_profit_usd + premium_profit_usd
+            
+            return total_profit_usd
+        except (ValueError, TypeError, AttributeError, InvalidOperation) as e:
+            print(f"Error calculating profit for {self.product.name}: {e}")
+            return Decimal('0.00')
+    
+    def get_base_profit_usd(self):
+        """Calculate base profit (minimum price - purchase price)"""
+        try:
+            if not self.product.purchase_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            purchase_price_usd = Decimal(str(self.product.purchase_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            base_profit_usd = (minimum_price_usd - purchase_price_usd) * quantity
+            return base_profit_usd.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation) as e:
+            return Decimal('0.00')
+    
+    def get_premium_profit_usd(self):
+        """Calculate premium profit (actual price - minimum price + overpayment)"""
+        try:
+            if not self.unit_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            unit_price_usd = Decimal(str(self.unit_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            # Calculate premium from selling above minimum price
+            price_premium = (unit_price_usd - minimum_price_usd) * quantity
+            
+            # Calculate overpayment premium (amount paid - total amount)
+            overpayment_premium = Decimal('0.00')
+            if self.sale.amount_paid > self.sale.total_amount:
+                overpayment = self.sale.amount_paid - self.sale.total_amount
+                overpayment_premium = Decimal(str(overpayment))
+            
+            # Total premium profit = price premium + overpayment premium
+            total_premium_profit = price_premium + overpayment_premium
+            return total_premium_profit.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation) as e:
+            return Decimal('0.00')
+    
+    def get_profit(self):
+        """Legacy method for backward compatibility - returns float"""
+        return float(self.get_profit_usd())
+    
+    def clean(self):
+        """Validate that unit_price is not below minimum selling price"""
+        from django.core.exceptions import ValidationError
+        
+        if self.product and self.unit_price and self.product.selling_price:
+            if self.unit_price < self.product.selling_price:
+                raise ValidationError({
+                    'unit_price': f'Unit price (${self.unit_price}) cannot be below minimum selling price (${self.product.selling_price}). The minimum selling price acts as the floor price for this product.'
+                })
+        
+    def save(self, *args, **kwargs):
+        # Calculate total price before saving
+        self.total_price = self.quantity * self.unit_price
+        super().save(*args, **kwargs)
+        
+    @property
+    def profit_margin(self):
+        """Calculate profit margin percentage"""
+        if self.total_price and self.total_price != 0:
+            return (self.get_profit() / float(self.total_price)) * 100
+        return 0
+
+
+class SaleItemSOS(models.Model):
+    """Individual items in a SOS sale"""
+    sale = models.ForeignKey(SaleSOS, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Unit price in SOS")
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total price in SOS")
+
+    class Meta:
+        verbose_name = "SOS Sale Item"
+        verbose_name_plural = "SOS Sale Items"
+
+    def __str__(self):
+        return f"{self.product.name} x{self.quantity} (SOS)"
+
+    def get_profit_usd(self):
+        """Calculate profit for this sale item in USD using Decimal for precision"""
+        try:
+            # Use the new base and premium profit methods that include overpayments
+            base_profit_usd = self.get_base_profit_usd()
+            premium_profit_usd = self.get_premium_profit_usd()
+            
+            # Total profit = base profit + premium profit
+            total_profit_usd = base_profit_usd + premium_profit_usd
+            
+            return total_profit_usd
+        except (ValueError, TypeError, AttributeError, InvalidOperation, ZeroDivisionError) as e:
+            print(f"Error calculating profit for {self.product.name}: {e}")
+            return Decimal('0.00')
+    
+    def get_base_profit_usd(self):
+        """Calculate base profit (minimum price - purchase price)"""
+        try:
+            if not self.product.purchase_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            purchase_price_usd = Decimal(str(self.product.purchase_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            base_profit_usd = (minimum_price_usd - purchase_price_usd) * quantity
+            return base_profit_usd.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation) as e:
+            return Decimal('0.00')
+    
+    def get_premium_profit_usd(self):
+        """Calculate premium profit (actual price - minimum price + overpayment)"""
+        try:
+            if not self.unit_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            currency_settings = CurrencySettings.objects.first()
+            if not currency_settings or currency_settings.usd_to_sos_rate <= 0:
+                return Decimal('0.00')
+            
+            unit_price_sos = Decimal(str(self.unit_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            # Convert actual price to USD
+            actual_price_usd = (unit_price_sos * quantity) / currency_settings.usd_to_sos_rate
+            minimum_revenue_usd = minimum_price_usd * quantity
+            
+            # Calculate premium from selling above minimum price
+            price_premium = actual_price_usd - minimum_revenue_usd
+            
+            # Calculate overpayment premium (amount paid - total amount, converted to USD)
+            overpayment_premium = Decimal('0.00')
+            if self.sale.amount_paid > self.sale.total_amount:
+                overpayment_sos = self.sale.amount_paid - self.sale.total_amount
+                overpayment_premium = overpayment_sos / currency_settings.usd_to_sos_rate
+            
+            # Total premium profit = price premium + overpayment premium
+            total_premium_profit = price_premium + overpayment_premium
+            return total_premium_profit.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation, ZeroDivisionError) as e:
+            return Decimal('0.00')
+    
+    def get_profit(self):
+        """Legacy method for backward compatibility - returns float"""
+        return float(self.get_profit_usd())
+    
+    def clean(self):
+        """Validate that unit_price is not below minimum selling price (converted to SOS)"""
+        from django.core.exceptions import ValidationError
+        
+        if self.product and self.unit_price and self.product.selling_price:
+            # Get currency settings to convert minimum selling price to SOS for comparison
+            currency_settings = CurrencySettings.objects.first()
+            if not currency_settings or currency_settings.usd_to_sos_rate <= 0:
+                # If no currency settings, skip validation
+                return
+            
+            # Convert minimum selling price from USD to SOS for comparison
+            minimum_price_sos = self.product.selling_price * currency_settings.usd_to_sos_rate
+            
+            if self.unit_price < minimum_price_sos:
+                raise ValidationError({
+                    'unit_price': f'Unit price ({self.unit_price} SOS) cannot be below minimum selling price ({minimum_price_sos:.2f} SOS). The minimum selling price acts as the floor price for this product.'
+                })
+        
+    def save(self, *args, **kwargs):
+        # Calculate total price before saving
+        self.total_price = self.quantity * self.unit_price
+        super().save(*args, **kwargs)
+        
+    @property
+    def profit_margin(self):
+        """Calculate profit margin percentage"""
+        if self.total_price and self.total_price != 0:
+            return (self.get_profit() / float(self.total_price)) * 100
+        return 0
+
+
+class SaleItemETB(models.Model):
+    """Individual items in a ETB sale"""
+    sale = models.ForeignKey(SaleETB, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Unit price in ETB")
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total price in ETB")
+
+    class Meta:
+        verbose_name = "ETB Sale Item"
+        verbose_name_plural = "ETB Sale Items"
+
+    def __str__(self):
+        return f"{self.product.name} x{self.quantity} (ETB)"
+
+    def get_profit_usd(self):
+        """Calculate profit for this sale item in USD using Decimal for precision"""
+        try:
+            # Use the new base and premium profit methods that include overpayments
+            base_profit_usd = self.get_base_profit_usd()
+            premium_profit_usd = self.get_premium_profit_usd()
+            
+            # Total profit = base profit + premium profit
+            total_profit_usd = base_profit_usd + premium_profit_usd
+            
+            return total_profit_usd
+        except (ValueError, TypeError, AttributeError, InvalidOperation, ZeroDivisionError) as e:
+            print(f"Error calculating profit for {self.product.name}: {e}")
+            return Decimal('0.00')
+    
+    def get_base_profit_usd(self):
+        """Calculate base profit (minimum price - purchase price)"""
+        try:
+            if not self.product.purchase_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            purchase_price_usd = Decimal(str(self.product.purchase_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            base_profit_usd = (minimum_price_usd - purchase_price_usd) * quantity
+            return base_profit_usd.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation) as e:
+            return Decimal('0.00')
+    
+    def get_premium_profit_usd(self):
+        """Calculate premium profit (actual price - minimum price + overpayment)
+        Uses the exchange rate stored at time of sale for accurate static profit.
+        """
+        try:
+            if not self.unit_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            # Use stored exchange rate from sale (not current rate!)
+            exchange_rate = self.sale.exchange_rate_at_sale
+            if not exchange_rate or exchange_rate <= 0:
+                # Fallback to current rate only if no stored rate exists
+                currency_settings = CurrencySettings.objects.first()
+                if not currency_settings or currency_settings.usd_to_etb_rate <= 0:
+                    return Decimal('0.00')
+                exchange_rate = currency_settings.usd_to_etb_rate
+            
+            unit_price_etb = Decimal(str(self.unit_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            # Convert actual price to USD using STORED exchange rate
+            actual_price_usd = (unit_price_etb * quantity) / exchange_rate
+            minimum_revenue_usd = minimum_price_usd * quantity
+            
+            # Calculate premium from selling above minimum price
+            price_premium = actual_price_usd - minimum_revenue_usd
+            
+            # Calculate overpayment premium (amount paid - total amount, converted to USD)
+            overpayment_premium = Decimal('0.00')
+            if self.sale.amount_paid > self.sale.total_amount:
+                overpayment_etb = self.sale.amount_paid - self.sale.total_amount
+                overpayment_premium = overpayment_etb / exchange_rate
+            
+            # Total premium profit = price premium + overpayment premium
+            total_premium_profit = price_premium + overpayment_premium
+            return total_premium_profit.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation, ZeroDivisionError) as e:
+            return Decimal('0.00')
+    
+    def get_profit(self):
+        """Legacy method for backward compatibility - returns float"""
+        return float(self.get_profit_usd())
+    
+    def clean(self):
+        """Validate that unit_price is not below minimum selling price (converted to ETB)"""
+        from django.core.exceptions import ValidationError
+        
+        if self.product and self.unit_price and self.product.selling_price:
+            # Get currency settings to convert minimum selling price to ETB for comparison
+            currency_settings = CurrencySettings.objects.first()
+            if not currency_settings or currency_settings.usd_to_etb_rate <= 0:
+                # If no currency settings, skip validation
+                return
+            
+            # Convert minimum selling price from USD to ETB for comparison
+            minimum_price_etb = self.product.selling_price * currency_settings.usd_to_etb_rate
+            
+            if self.unit_price < minimum_price_etb:
+                raise ValidationError({
+                    'unit_price': f'Unit price ({self.unit_price} ETB) cannot be below minimum selling price ({minimum_price_etb:.2f} ETB). The minimum selling price acts as the floor price for this product.'
+                })
+        
+    def save(self, *args, **kwargs):
+        # Calculate total price before saving
+        self.total_price = self.quantity * self.unit_price
+        super().save(*args, **kwargs)
+        
+    @property
+    def profit_margin(self):
+        """Calculate profit margin percentage"""
+        if self.total_price and self.total_price != 0:
+            return (self.get_profit() / float(self.total_price)) * 100
+        return 0
+
+
+# Legacy SaleItem model for backward compatibility
+class SaleItem(models.Model):
+    """Legacy individual items in a sale"""
+    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        verbose_name = "Sale Item"
+        verbose_name_plural = "Sale Items"
+
+    def __str__(self):
+        return f"{self.product.name} x{self.quantity}"
+
+    def get_profit_usd(self):
+        """Calculate profit for this sale item in USD using Decimal for precision"""
+        try:
+            # Use the new base and premium profit methods that include overpayments
+            base_profit_usd = self.get_base_profit_usd()
+            premium_profit_usd = self.get_premium_profit_usd()
+            
+            # Total profit = base profit + premium profit
+            total_profit_usd = base_profit_usd + premium_profit_usd
+            
+            return total_profit_usd
+        except (ValueError, TypeError, AttributeError, InvalidOperation, ZeroDivisionError) as e:
+            print(f"Error calculating profit for {self.product.name}: {e}")
+            return Decimal('0.00')
+    
+    def get_base_profit_usd(self):
+        """Calculate base profit (minimum price - purchase price)"""
+        try:
+            if not self.product.purchase_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            purchase_price_usd = Decimal(str(self.product.purchase_price))
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            base_profit_usd = (minimum_price_usd - purchase_price_usd) * quantity
+            return base_profit_usd.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation) as e:
+            return Decimal('0.00')
+    
+    def get_premium_profit_usd(self):
+        """Calculate premium profit (actual price - minimum price + overpayment)"""
+        try:
+            if not self.unit_price or not self.product.selling_price or not self.quantity:
+                return Decimal('0.00')
+            
+            sale_currency = self.sale.currency
+            minimum_price_usd = Decimal(str(self.product.selling_price))
+            quantity = Decimal(str(self.quantity))
+            
+            if sale_currency == 'USD':
+                unit_price_usd = Decimal(str(self.unit_price))
+                
+                # Calculate premium from selling above minimum price
+                price_premium = (unit_price_usd - minimum_price_usd) * quantity
+                
+                # Calculate overpayment premium (amount paid - total amount)
+                overpayment_premium = Decimal('0.00')
+                if self.sale.amount_paid > self.sale.total_amount:
+                    overpayment = self.sale.amount_paid - self.sale.total_amount
+                    overpayment_premium = Decimal(str(overpayment))
+                
+                # Total premium profit = price premium + overpayment premium
+                total_premium_profit = price_premium + overpayment_premium
+                return total_premium_profit.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            else:  # SOS currency
+                currency_settings = CurrencySettings.objects.first()
+                if not currency_settings or currency_settings.usd_to_sos_rate <= 0:
+                    return Decimal('0.00')
+                
+                unit_price_sos = Decimal(str(self.unit_price))
+                actual_price_usd = (unit_price_sos * quantity) / currency_settings.usd_to_sos_rate
+                minimum_revenue_usd = minimum_price_usd * quantity
+                
+                # Calculate premium from selling above minimum price
+                price_premium = actual_price_usd - minimum_revenue_usd
+                
+                # Calculate overpayment premium (amount paid - total amount, converted to USD)
+                overpayment_premium = Decimal('0.00')
+                if self.sale.amount_paid > self.sale.total_amount:
+                    overpayment_sos = self.sale.amount_paid - self.sale.total_amount
+                    overpayment_premium = overpayment_sos / currency_settings.usd_to_sos_rate
+                
+                # Total premium profit = price premium + overpayment premium
+                total_premium_profit = price_premium + overpayment_premium
+                return total_premium_profit.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        except (ValueError, TypeError, AttributeError, InvalidOperation, ZeroDivisionError) as e:
+            return Decimal('0.00')
+    
+    def get_profit(self):
+        """Legacy method for backward compatibility - returns float"""
+        return float(self.get_profit_usd())
+    
+    def clean(self):
+        """Validate that unit_price is not below minimum selling price"""
+        from django.core.exceptions import ValidationError
+        
+        if self.product and self.unit_price and self.product.selling_price:
+            sale_currency = self.sale.currency
+            
+            if sale_currency == 'USD':
+                # For USD sales, compare directly with minimum selling price
+                if self.unit_price < self.product.selling_price:
+                    raise ValidationError({
+                        'unit_price': f'Unit price (${self.unit_price}) cannot be below minimum selling price (${self.product.selling_price}). The minimum selling price acts as the floor price for this product.'
+                    })
+            else:  # SOS currency
+                # For SOS sales, convert minimum selling price to SOS for comparison
+                currency_settings = CurrencySettings.objects.first()
+                if not currency_settings or currency_settings.usd_to_sos_rate <= 0:
+                    # If no currency settings, skip validation
+                    return
+                
+                # Convert minimum selling price from USD to SOS for comparison
+                minimum_price_sos = self.product.selling_price * currency_settings.usd_to_sos_rate
+                
+                if self.unit_price < minimum_price_sos:
+                    raise ValidationError({
+                        'unit_price': f'Unit price ({self.unit_price} SOS) cannot be below minimum selling price ({minimum_price_sos:.2f} SOS). The minimum selling price acts as the floor price for this product.'
+                    })
+        
+    def save(self, *args, **kwargs):
+        # Calculate total price before saving
+        self.total_price = self.quantity * self.unit_price
+        super().save(*args, **kwargs)
+        
+    @property
+    def profit_margin(self):
+        """Calculate profit margin percentage"""
+        if self.total_price and self.total_price != 0:
+            return (self.get_profit() / float(self.total_price)) * 100
+        return 0
+
+class InventoryLog(models.Model):
+    """Log of all inventory changes"""
+    ACTION_CHOICES = [
+        ('RESTOCK', 'Restock'),
+        ('SALE', 'Sale'),
+        ('ADJUSTMENT', 'Manual Adjustment'),
+    ]
+    
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    quantity_change = models.IntegerField()  # Positive for restock, negative for sale
+    old_quantity = models.PositiveIntegerField()
+    new_quantity = models.PositiveIntegerField()
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    notes = models.TextField(blank=True)
+    date_created = models.DateTimeField(auto_now_add=True)
+    related_sale = models.ForeignKey(Sale, on_delete=models.SET_NULL, null=True, blank=True)
+    related_sale_usd = models.ForeignKey(SaleUSD, on_delete=models.SET_NULL, null=True, blank=True)
+    related_sale_sos = models.ForeignKey(SaleSOS, on_delete=models.SET_NULL, null=True, blank=True)
+    related_sale_etb = models.ForeignKey(SaleETB, on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Inventory Log"
+        verbose_name_plural = "Inventory Logs"
+
+    def __str__(self):
+        return f"{self.product.name} - {self.action} ({self.quantity_change:+d})"
+
+
+class DebtPaymentUSD(models.Model):
+    """USD debt payments - completely separate from SOS"""
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in USD")
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    date_created = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "USD Debt Payment"
+        verbose_name_plural = "USD Debt Payments"
+
+    def __str__(self):
+        return f"{self.customer.name} - ${self.amount} USD"
+
+
+class DebtPaymentSOS(models.Model):
+    """SOS debt payments - completely separate from USD"""
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in SOS")
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    date_created = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "SOS Debt Payment"
+        verbose_name_plural = "SOS Debt Payments"
+
+    def __str__(self):
+        return f"{self.customer.name} - {self.amount} SOS"
+
+
+class DebtPaymentETB(models.Model):
+    """ETB debt payments - completely separate from USD/SOS"""
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in ETB")
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    date_created = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "ETB Debt Payment"
+        verbose_name_plural = "ETB Debt Payments"
+
+    def __str__(self):
+        return f"{self.customer.name} - {self.amount} ETB"
+
+
+# Legacy DebtPayment model for backward compatibility
+class DebtPayment(models.Model):
+    """Legacy Customer debt payments - kept for backward compatibility"""
+    CURRENCY_CHOICES = [
+        ('USD', 'US Dollar'),
+        ('SOS', 'Somaliland Shilling'),
+        ('ETB', 'Ethiopian Birr'),
+    ]
+    
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in USD")
+    original_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='SOS', help_text="Original payment currency")
+    original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Original payment amount in original currency")
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    date_created = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "Debt Payment"
+        verbose_name_plural = "Debt Payments"
+
+    def __str__(self):
+        return f"{self.customer.name} - {self.original_currency} {self.original_amount}"
+
+    def convert_to_sos_and_save_original(self, original_currency, original_amount):
+        """Convert payment to SOS (base currency) and save original amounts"""
+        currency_settings = CurrencySettings.objects.first()
+        if not currency_settings:
+            return
+        
+        # Save original amounts
+        self.original_currency = original_currency
+        self.original_amount = original_amount
+        
+        if original_currency == 'USD':
+            # Convert USD to SOS (base currency)
+            self.amount = currency_settings.convert_usd_to_sos(original_amount)
+        else:
+            self.amount = original_amount
+    
+    def get_amount_in_currency(self, target_currency):
+        """Get the payment amount in the specified currency"""
+        currency_settings = CurrencySettings.objects.first()
+        if not currency_settings:
+            return self.amount
+        
+        if target_currency == 'USD':
+            return currency_settings.convert_sos_to_usd(self.amount)
+        return self.amount
+
+
+class Receipt(models.Model):
+    """Digital receipts stored in database"""
+    sale = models.OneToOneField(Sale, on_delete=models.CASCADE)
+    receipt_number = models.CharField(max_length=20, unique=True)
+    content = models.TextField()  # JSON or formatted text content
+    date_created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Receipt"
+        verbose_name_plural = "Receipts"
+
+    def __str__(self):
+        return f"Receipt {self.receipt_number}"
+
+
+class DebtCorrection(models.Model):
+    """Model to track manual debt corrections/adjustments"""
+    CURRENCY_CHOICES = [
+        ('USD', 'US Dollar'),
+        ('SOS', 'Somaliland Shilling'),
+        ('ETB', 'Ethiopian Birr'),
+    ]
+    
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='debt_corrections')
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES)
+    old_debt_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Previous debt amount")
+    new_debt_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="New debt amount")
+    adjustment_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Amount of adjustment (positive or negative)")
+    reason = models.TextField(help_text="Reason for the debt correction")
+    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    date_created = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Debt Correction"
+        verbose_name_plural = "Debt Corrections"
+        ordering = ['-date_created']
+
+    def __str__(self):
+        return f"{self.customer.name} - {self.currency} {self.adjustment_amount:+.2f} ({self.date_created.strftime('%Y-%m-%d')})"
+    
+    def save(self, *args, **kwargs):
+        # Calculate adjustment amount if not provided
+        if not self.adjustment_amount:
+            self.adjustment_amount = self.new_debt_amount - self.old_debt_amount
+        super().save(*args, **kwargs)
+
+
+class AuditLog(models.Model):
+    """System audit log for all critical actions"""
+    ACTION_CHOICES = [
+        ('SALE_CREATED', 'Sale Created'),
+        ('INVENTORY_ADJUSTED', 'Inventory Adjusted'),
+        ('DEBT_PAID', 'Debt Payment'),
+        ('DEBT_ADDED', 'Debt Added'),
+        ('DEBT_CORRECTED', 'Debt Corrected'),
+        ('DEBT_MANUALLY_ADJUSTED', 'Debt Manually Adjusted'),
+        ('STAFF_ADDED', 'Staff Added'),
+        ('STAFF_UPDATED', 'Staff Updated'),
+        ('STAFF_DEACTIVATED', 'Staff Deactivated'),
+        ('CUSTOMER_ADDED', 'Customer Added'),
+        ('CURRENCY_UPDATED', 'Currency Rate Updated'),
+        ('create_staff', 'Staff Created'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    action = models.CharField(max_length=50, choices=ACTION_CHOICES)
+    object_type = models.CharField(max_length=50)
+    object_id = models.CharField(max_length=50)
+    details = models.TextField(blank=True)
+    date_created = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Audit Log"
+        verbose_name_plural = "Audit Logs"
+        ordering = ['-date_created']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.action} - {self.date_created}"
