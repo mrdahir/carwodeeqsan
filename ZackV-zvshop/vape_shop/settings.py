@@ -27,9 +27,12 @@ ALLOWED_HOSTS = [
 #     'https://app.igniteshiningcompany.store',
 # ]
 # Add this near your ALLOWED_HOSTS
+# Add https://localhost:8000 and the http version just in case
 CSRF_TRUSTED_ORIGINS = [
     'https://*.github.dev',
     'https://*.app.github.dev',
+    'https://localhost:8000',  # <--- Add this line
+    'http://localhost:8000',   # <--- And this line
 ]
 # Application definition
 INSTALLED_APPS = [
