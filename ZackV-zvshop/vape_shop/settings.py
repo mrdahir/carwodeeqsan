@@ -14,6 +14,8 @@ SECRET_KEY = 'django-insecure-^jz6gn$@nu%l#q==aqc==&x2czfx7^p0mxm9jfrjzf8arm3c6i
 DEBUG = True
 
 ALLOWED_HOSTS = [
+    '.github.dev',
+    '.app.github.dev',
     '127.0.0.1',
     'localhost',
 ]
@@ -24,7 +26,11 @@ ALLOWED_HOSTS = [
 #     'https://www.igniteshiningcompany.store',
 #     'https://app.igniteshiningcompany.store',
 # ]
-
+# Add this near your ALLOWED_HOSTS
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.github.dev',
+    'https://*.app.github.dev',
+]
 # Application definition
 INSTALLED_APPS = [
     'django.contrib.admin',
