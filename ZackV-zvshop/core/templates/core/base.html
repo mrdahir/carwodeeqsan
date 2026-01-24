@@ -524,23 +524,23 @@
             <div class="d-flex flex-column gap-2 flex-grow-1">
                 <a href="{% url 'core:dashboard' %}"
                     class="nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
-                    <i class="fas fa-chart-pie"></i> Dashboard
+                    <i class="fas fa-chart-pie"></i> xogaha
                 </a>
                 {% if user.is_superuser or user.can_sell %}
                 <a href="{% url 'core:create_sale' %}"
                     class="nav-item {% if request.resolver_match.url_name == 'create_sale' %}active{% endif %}">
-                    <i class="fas fa-cash-register"></i> New Sale
+                    <i class="fas fa-cash-register"></i> Iib Cusub
                 </a>
                 {% endif %}
                 {% if user.is_superuser or user.can_restock %}
                 <a href="{% url 'core:inventory_list' %}"
                     class="nav-item {% if request.resolver_match.url_name == 'inventory_list' %}active{% endif %}">
-                    <i class="fas fa-boxes"></i> Inventory
+                    <i class="fas fa-boxes"></i> Kaydka
                 </a>
                 {% endif %}
                 <a href="{% url 'core:customers_list' %}"
                     class="nav-item {% if request.resolver_match.url_name == 'customers_list' %}active{% endif %}">
-                    <i class="fas fa-users"></i> Customers
+                    <i class="fas fa-users"></i> Macmiil
                 </a>
 
             </div>
@@ -551,7 +551,7 @@
                                 class="fas fa-user"></i></div>
                         <div>
                             <div class="fw-bold text-dark">{{ user.get_full_name|default:user.username }}</div>
-                            <small class="text-secondary">Logged in</small>
+                            <small class="text-secondary">Soo galay</small>
                         </div>
                     </div>
                     <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit"
@@ -589,9 +589,9 @@
                         <div class="flex-grow-1">
                             <h6 class="mb-0 fw-bold">
                                 {% if message.tags == 'error' %}
-                                Error
+                                Khalad
                                 {% else %}
-                                Notification
+                                Ogeysiis
                                 {% endif %}
                             </h6>
                             <small class="text-secondary">{{ message }}</small>
@@ -608,23 +608,23 @@
         <nav class="bottom-nav">
             <a href="{% url 'core:dashboard' %}"
                 class="bottom-nav-item {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
-                <i class="fas fa-home"></i><span>Home</span>
+                <i class="fas fa-home"></i><span>Guriga</span>
             </a>
             {% if user.is_superuser or user.can_sell %}
             <a href="{% url 'core:create_sale' %}"
                 class="bottom-nav-item {% if request.resolver_match.url_name == 'create_sale' %}active{% endif %}">
-                <i class="fas fa-plus-circle fs-3 text-primary"></i><span class="fw-bold text-primary">Sale</span>
+                <i class="fas fa-plus-circle fs-3 text-primary"></i><span class="fw-bold text-primary">Iib</span>
             </a>
             {% endif %}
             {% if user.is_superuser or user.can_restock %}
             <a href="{% url 'core:inventory_list' %}"
                 class="bottom-nav-item {% if request.resolver_match.url_name == 'inventory_list' %}active{% endif %}">
-                <i class="fas fa-box"></i><span>Stock</span>
+                <i class="fas fa-box"></i><span>Kaydka</span>
             </a>
             {% endif %}
             <a href="{% url 'core:customers_list' %}"
                 class="bottom-nav-item {% if request.resolver_match.url_name == 'customers_list' %}active{% endif %}">
-                <i class="fas fa-users"></i><span>People</span>
+                <i class="fas fa-users"></i><span>Dadka</span>
             </a>
         </nav>
     </div>

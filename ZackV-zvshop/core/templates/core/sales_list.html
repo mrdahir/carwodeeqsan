@@ -1,7 +1,7 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Sales - Vape Shop Management System{% endblock %}
+{% block title %}Iibka - CarwoDeeqsan Management System{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -56,12 +56,12 @@
 {% block content %}
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
     <h1 class="h2">
-        <i class="fas fa-shopping-cart me-2"></i>Sales
+        <i class="fas fa-shopping-cart me-2"></i>Iibka
     </h1>
     <div class="btn-toolbar mb-2 mb-md-0">
         <div class="btn-group me-2">
             <a href="{% url 'core:create_sale' %}" class="btn btn-primary">
-                <i class="fas fa-plus me-2"></i>New Sale
+                <i class="fas fa-plus me-2"></i>Iibso Cusub
             </a>
         </div>
     </div>
@@ -72,14 +72,14 @@
     <div class="card-body">
         <form method="get" class="row g-3">
             <div class="col-md-6">
-                <label for="search" class="form-label">Search</label>
+                <label for="search" class="form-label">Raadi</label>
                 <input type="text" class="form-control" id="search" name="search" value="{{ search }}"
-                    placeholder="Search by transaction ID, customer name, or phone...">
+                    placeholder="Raadi iyada oo isticmaali ID, magaca macmiilka ama lambarka telefoonka...">
             </div>
             <div class="col-md-3">
-                <label for="currency" class="form-label">Currency</label>
+                <label for="currency" class="form-label">Lacagta</label>
                 <select class="form-select" id="currency" name="currency">
-                    <option value="">All Currencies</option>
+                    <option value="">Dhammu Lacagta</option>
                     <option value="USD" {% if currency == 'USD' %}selected{% endif %}>USD</option>
                     <option value="SOS" {% if currency == 'SOS' %}selected{% endif %}>SOS</option>
                     <option value="ETB" {% if currency == 'ETB' %}selected{% endif %}>ETB</option>
@@ -89,7 +89,7 @@
                 <label class="form-label">&nbsp;</label>
                 <div class="d-grid">
                     <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-search me-2"></i>Search
+                        <i class="fas fa-search me-2"></i>Raadi
                     </button>
                 </div>
             </div>

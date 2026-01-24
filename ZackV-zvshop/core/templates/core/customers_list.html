@@ -125,14 +125,14 @@
                 <div class="input-group">
                     <i class="fas fa-search text-muted me-2"></i>
                     <input type="text" id="customerSearch" class="form-control" 
-                           placeholder="Search customers..." autocomplete="off">
+                           placeholder="Raadi macmiilka..." autocomplete="off">
                 </div>
             </div>
             <div class="col-4">
                 <select class="form-select" id="debtFilter">
-                    <option value="">All</option>
-                    <option value="has_debt">Has Debt</option>
-                    <option value="no_debt">No Debt</option>
+                    <option value="">Dhammu</option>
+                    <option value="has_debt">Dayn Leh</option>
+                    <option value="no_debt">Dayn Lama Leh</option>
                 </select>
             </div>
         </div>
@@ -144,7 +144,7 @@
             <div class="card text-center">
                 <div class="card-body p-2">
                     <h6 class="mb-0 text-primary">{{ total_customers }}</h6>
-                    <small class="text-muted">Total</small>
+                    <small class="text-muted">Wadarta</small>
                 </div>
             </div>
         </div>
@@ -152,7 +152,7 @@
             <div class="card text-center">
                 <div class="card-body p-2">
                     <h6 class="mb-0 text-danger">{{ customers_with_debt }}</h6>
-                    <small class="text-muted">With Debt</small>
+                    <small class="text-muted">Dayn Leh</small>
                 </div>
             </div>
         </div>
@@ -160,7 +160,7 @@
             <div class="card text-center">
                 <div class="card-body p-2">
                     <h6 class="mb-0 text-success">${{ total_debt|floatformat:0 }}</h6>
-                    <small class="text-muted">Total Debt</small>
+                    <small class="text-muted">Wadarta Daynka</small>
                 </div>
             </div>
         </div>
@@ -181,8 +181,8 @@
                             {% endif %}
                         </div>
                         <div class="text-muted">{{ customer.phone }}</div>
-                        <small class="text-muted">
-                            Last purchase: {{ customer.last_purchase_date|date:"M d, Y"|default:"Never" }}
+                        <div class="text-muted">
+                            Iibso ugu dhowaan: {{ customer.last_purchase_date|date:"M d, Y"|default:"Marna" }}
                         </small>
                     </div>
                     <div class="text-end">

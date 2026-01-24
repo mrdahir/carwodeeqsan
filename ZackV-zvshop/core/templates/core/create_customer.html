@@ -1,7 +1,7 @@
 {% extends 'core/base.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Add Customer - Vape Shop Management System{% endblock %}
+{% block title %}Macmiil Cusub - Carwo Deeqsan Management System{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -45,12 +45,12 @@
 {% block content %}
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
     <h1 class="h2">
-        <i class="fas fa-user-plus me-2"></i>Add New Customer
+        <i class="fas fa-user-plus me-2"></i>Macmiil Cusub
     </h1>
     <div class="btn-toolbar mb-2 mb-md-0">
         <div class="btn-group me-2">
             <a href="{% url 'core:customers_list' %}" class="btn btn-outline-secondary">
-                <i class="fas fa-arrow-left me-2"></i>Back to Customers
+                <i class="fas fa-arrow-left me-2"></i>Ku Noqo Macmiilka
             </a>
         </div>
     </div>
@@ -61,7 +61,7 @@
         <div class="card">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="fas fa-user me-2"></i>Customer Information
+                    <i class="fas fa-user me-2"></i>Xogaha Macmiilka
                 </h5>
             </div>
             <div class="card-body">
@@ -90,10 +90,10 @@
                     
                     <div class="d-grid gap-2 d-md-flex justify-content-md-end">
                         <a href="{% url 'core:customers_list' %}" class="btn btn-outline-secondary me-md-2">
-                            <i class="fas fa-times me-2"></i>Cancel
+                            <i class="fas fa-times me-2"></i>Kanoqo
                         </a>
                         <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save me-2"></i>Add Customer
+                            <i class="fas fa-save me-2"></i>Macmiil Kudar
                         </button>
                     </div>
                 </form>
@@ -105,26 +105,26 @@
         <div class="card">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="fas fa-lightbulb me-2"></i>Tips
+                    <i class="fas fa-lightbulb me-2"></i>Talooyin
                 </h5>
             </div>
             <div class="card-body">
                 <ul class="list-unstyled mb-0">
                     <li class="mb-2">
                         <i class="fas fa-check text-success me-2"></i>
-                        Phone number must be unique
+                        Lambarka telefoonka waa inuu ka duwan tahay
                     </li>
                     <li class="mb-2">
                         <i class="fas fa-check text-success me-2"></i>
-                        Customer name is required
+                        Magaca macmiilka waajib ah
                     </li>
                     <li class="mb-2">
                         <i class="fas fa-check text-success me-2"></i>
-                        Phone number helps with customer identification
+                        Lambarka telefoonka waxay ka cawinaysa inad so sarto
                     </li>
                     <li>
                         <i class="fas fa-check text-success me-2"></i>
-                        Inactive customers won't appear in sales
+                        Macmiilada la sameyo en waxba ka iibsan kumaso baxayan ila ay wax ibsadan
                     </li>
                 </ul>
             </div>
@@ -133,26 +133,26 @@
         <div class="card mt-3">
             <div class="card-header">
                 <h5 class="card-title mb-0">
-                    <i class="fas fa-info-circle me-2"></i>Customer Features
+                    <i class="fas fa-info-circle me-2"></i>Sifada Macmiilka
                 </h5>
             </div>
             <div class="card-body">
                 <ul class="list-unstyled mb-0">
                     <li class="mb-2">
                         <i class="fas fa-shopping-cart text-primary me-2"></i>
-                        Purchase history tracking
+                        Raad raaca taariikhda iibka macmilka
                     </li>
                     <li class="mb-2">
                         <i class="fas fa-credit-card text-warning me-2"></i>
-                        Debt management
+                        Maareynta daynta macmiilka
                     </li>
                     <li class="mb-2">
                         <i class="fas fa-chart-line text-success me-2"></i>
-                        Sales analytics
+                        xogta iibka macmilka
                     </li>
                     <li>
                         <i class="fas fa-search text-info me-2"></i>
-                        Quick search by name or phone
+                        ku Raadi si degdeg ah oo magac ama telefonka macmilka
                     </li>
                 </ul>
             </div>

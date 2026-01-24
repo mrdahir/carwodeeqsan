@@ -1,7 +1,7 @@
 {% extends 'core/base.html' %}
 {% load static %}
 
-{% block title %}Inventory - Vape Shop Management System{% endblock %}
+{% block title %}Kaydka - CarwoDeeqsan Management System{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -55,12 +55,12 @@
 {% block content %}
 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
     <h1 class="h2">
-        <i class="fas fa-boxes me-2"></i>Inventory
+        <i class="fas fa-boxes me-2"></i>Kaydka
     </h1>
     <div class="btn-toolbar mb-2 mb-md-0">
         <div class="btn-group me-2">
             <a href="{% url 'core:restock_inventory' %}" class="btn btn-primary">
-                <i class="fas fa-plus me-2"></i>Restock Inventory
+                <i class="fas fa-plus me-2"></i>Kaydka biiri
             </a>
         </div>
     </div>
@@ -71,19 +71,19 @@
     <div class="card-body">
         <form method="get" class="row g-3">
             <div class="col-md-4">
-                <label for="search" class="form-label">Search Products</label>
-                <input type="text" class="form-control" id="search" name="search" value="{{ search_form.search.value|default:'' }}" placeholder="Search by name, brand, or category...">
+                <label for="search" class="form-label">Raadi Alaabta</label>
+                <input type="text" class="form-control" id="search" name="search" value="{{ search_form.search.value|default:'' }}" placeholder="Raadi iyada oo isticmaali magac, caasimadda ama qeybta...">
             </div>
             <div class="col-md-3">
-                <label for="category" class="form-label">Category</label>
+                <label for="category" class="form-label">Qeybta</label>
                 {{ search_form.category }}
             </div>
             <div class="col-md-3">
-                <label class="form-label">Stock Status</label>
+                <label class="form-label">Xaalka Kaydka</label>
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" id="low_stock" name="low_stock" value="1" {% if low_stock_only %}checked{% endif %}>
                     <label class="form-check-label" for="low_stock">
-                        Low Stock Only
+                        Kaydka Yar Oo Kaliya
                     </label>
                 </div>
             </div>
@@ -91,7 +91,7 @@
                 <label class="form-label">&nbsp;</label>
                 <div class="d-grid">
                     <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-search me-2"></i>Search
+                        <i class="fas fa-search me-2"></i>Raadi
                     </button>
                 </div>
             </div>

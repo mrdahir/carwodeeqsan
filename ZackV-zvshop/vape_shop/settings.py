@@ -13,12 +13,12 @@ SECRET_KEY = 'django-insecure-^jz6gn$@nu%l#q==aqc==&x2czfx7^p0mxm9jfrjzf8arm3c6i
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = [
-    '.github.dev',
-    '.app.github.dev',
-    '127.0.0.1',
-    'localhost',
-]
+# ALLOWED_HOSTS = [
+#     '.github.dev',
+#     '.app.github.dev',
+#     '127.0.0.1',
+#     'localhost',
+# ]
 
 # Uncomment if you later use HTTPS in dev (rare)
 # CSRF_TRUSTED_ORIGINS = [
@@ -28,11 +28,20 @@ ALLOWED_HOSTS = [
 # ]
 # Add this near your ALLOWED_HOSTS
 # Add https://localhost:8000 and the http version just in case
+ALLOWED_HOSTS = [
+    '.github.dev',
+    '.app.github.dev',
+    'upgraded-telegram-4jqgwpw7gjcj779-8000.app.github.dev',  # Add this specific host
+    '127.0.0.1',
+    'localhost',
+]
+
 CSRF_TRUSTED_ORIGINS = [
     'https://*.github.dev',
     'https://*.app.github.dev',
-    'https://localhost:8000',  # <--- Add this line
-    'http://localhost:8000',   # <--- And this line
+    'https://upgraded-telegram-4jqgwpw7gjcj779-8000.app.github.dev',  # Add this specific origin
+    'https://localhost:8000',
+    'http://localhost:8000',
 ]
 # Application definition
 INSTALLED_APPS = [
