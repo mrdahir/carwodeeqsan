@@ -2,12 +2,14 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.http import JsonResponse
-from django.db.models import Sum, Count, Q, F, Case, When, Value, DecimalField
-from django.db.models.functions import Coalesce
+from django.db.models import Sum, Count, Q, F, Case, When, Value, DecimalField, ExpressionWrapper
+from django.db.models.functions import Coalesce, NullIf
 from django.core.paginator import Paginator
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from functools import wraps
 
 import json
 
@@ -15,16 +17,21 @@ from .models import *
 from .forms import *
 from django.db import IntegrityError
 
-def is_superuser(user):
-    return user.is_superuser
-
-def has_sell_permission(user):
-    return user.is_superuser or user.can_sell
-
-def has_restock_permission(user):
-    return user.is_superuser or user.can_restock
+def superuser_required(view_func):
+    """Decorator that requires user to be authenticated and superuser"""
+    @wraps(view_func)
+    def _wrapped_view(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            messages.error(request, "Authentication required.")
+            return redirect('admin:login')
+        if not request.user.is_superuser:
+            messages.error(request, "Superuser privileges required.")
+            return redirect('core:dashboard')
+        return view_func(request, *args, **kwargs)
+    return _wrapped_view
 
 def log_audit_action(user, action, object_type, object_id, details, ip_address=None):
+    """Log audit action - user can be None for anonymous operations"""
     AuditLog.objects.create(
         user=user,
         action=action,
@@ -36,405 +43,327 @@ def log_audit_action(user, action, object_type, object_id, details, ip_address=N
 
 @login_required
 def home(request):
-    """Home view that redirects all staff to dashboard"""
-    # All staff members land on dashboard as their primary page
+    """Home view that redirects all admins to dashboard"""
     return redirect('core:dashboard')
 
+@login_required
 @login_required
 def dashboard_view(request):
     # Get today's date
     today = timezone.now().date()
     
-    # Today's sales using new separate models
-    today_usd_sales = SaleUSD.objects.filter(date_created__date=today)
-    today_sos_sales = SaleSOS.objects.filter(date_created__date=today)
-    today_etb_sales = SaleETB.objects.filter(date_created__date=today)
-    
     # Get currency settings
     currency_settings = CurrencySettings.objects.first()
-    exchange_rate = currency_settings.usd_to_sos_rate if currency_settings else Decimal('8000.00')
-    
-    # --- TODAY'S REVENUE CALCULATION ---
-    # USD revenue
-    today_revenue_usd = today_usd_sales.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
-    
-    # SOS revenue
-    today_revenue_sos = today_sos_sales.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+    # Default rates if settings missing
+    usd_to_sos_rate = currency_settings.usd_to_sos_rate if currency_settings else Decimal('8000.00')
+    usd_to_etb_rate = currency_settings.usd_to_etb_rate if currency_settings else Decimal('100.00')
 
-    # ETB revenue
-    today_revenue_etb = today_etb_sales.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+    # --- REVENUE CALCULATION (ETB BASE) ---
+    today_revenue_etb_total = Decimal('0.00')
     
-    today_revenue_sos_in_usd = Decimal('0.00')
-    if currency_settings:
-        if today_revenue_sos > 0:
-            today_revenue_sos_in_usd = currency_settings.convert_sos_to_usd(today_revenue_sos)
-            
-    # Convert ETB revenue to USD for combined display (using stored exchange rate from each sale)
-    today_revenue_etb_in_usd = Decimal('0.00')
-    if today_revenue_etb > 0:
-        for sale in today_etb_sales:
-            if sale.total_amount > 0:
-                # Use stored rate if available, otherwise fallback to current settings
-                rate = sale.exchange_rate_at_sale if sale.exchange_rate_at_sale > 0 else (currency_settings.usd_to_etb_rate if currency_settings else Decimal('100.00'))
-                if rate > 0:
-                    today_revenue_etb_in_usd += sale.total_amount / rate
-
-    # Combined revenue for dashboard display
-    today_revenue = today_revenue_usd + today_revenue_sos_in_usd + today_revenue_etb_in_usd
-    # --- END REVENUE CALCULATION ---
-
-    # Today's transactions (visible to all staff)
-    today_transactions = today_usd_sales.count() + today_sos_sales.count() + today_etb_sales.count()
+    # 1. USD Sales -> ETB
+    today_revenue_usd = SaleUSD.objects.filter(date_created__date=today).aggregate(
+        total=Coalesce(Sum('total_amount'), Value(Decimal('0.00')))
+    )['total']
     
-    # --- TODAY'S PROFIT CALCULATION (ONLY for superusers) ---
-    today_profit_total = Decimal('0.00')      # Total profit in USD from USD and SOS sales
-    today_profit_usd_component = Decimal('0.00') # Profit component from USD sales only
-    today_profit_sos_raw = Decimal('0.00')    # Raw profit component from SOS sales (in SOS currency)
-    today_profit_sos_in_usd = Decimal('0.00') # Profit component from SOS sales converted to USD
-    today_profit_etb_in_usd = Decimal('0.00') # Profit component from ETB sales converted to USD
-    today_base_profit = Decimal('0.00')       # Base profit (minimum price - purchase price)
-    today_premium_profit = Decimal('0.00')    # Premium profit (actual price - minimum price)
+    # 2. SOS Sales -> ETB (SOS -> USD -> ETB)
+    today_revenue_sos = SaleSOS.objects.filter(date_created__date=today).aggregate(
+        total=Coalesce(Sum('total_amount'), Value(Decimal('0.00')))
+    )['total']
+    
+    # 3. ETB Sales (Already ETB)
+    today_revenue_etb = SaleETB.objects.filter(date_created__date=today).aggregate(
+        total=Coalesce(Sum('total_amount'), Value(Decimal('0.00')))
+    )['total']
+    
+    # Conversions
+    revenue_usd_in_etb = today_revenue_usd * usd_to_etb_rate
+    revenue_sos_in_etb = Decimal('0.00')
+    if usd_to_sos_rate > 0:
+        # Convert SOS to USD first, then TO ETB
+        revenue_sos_in_etb = (today_revenue_sos / usd_to_sos_rate) * usd_to_etb_rate
+        
+    today_revenue_etb_total = revenue_usd_in_etb + revenue_sos_in_etb + today_revenue_etb
 
+    # Transaction Counts
+    today_transactions = (
+        SaleUSD.objects.filter(date_created__date=today).count() +
+        SaleSOS.objects.filter(date_created__date=today).count() +
+        SaleETB.objects.filter(date_created__date=today).count()
+    )
+
+    # --- PROFIT CALCULATION (Superuser Only) ---
+    today_profit_in_etb = Decimal('0.00')
+    today_base_profit = Decimal('0.00')
+    today_premium_profit = Decimal('0.00')
+    
     if request.user.is_superuser:
-        print(f"DEBUG: Calculating profit for {today}")
+        # Helper to calculate profit for a queryset
+        def calculate_profit(sale_items, currency_type):
+            base_p = Decimal('0.00')
+            premium_p = Decimal('0.00')
+            
+            for item in sale_items:
+                qty = item.quantity
+                product_cost_usd = item.product.purchase_price
+                product_sell_usd = item.product.selling_price
+                
+                # Base Profit = (Selling Price - Cost) * Qty (Always calculated in USD first)
+                item_base_profit_usd = (product_sell_usd - product_cost_usd) * qty
+                
+                # Premium Profit = (Actual Sale Price - Selling Price) * Qty
+                # We need actual unit price in USD
+                actual_unit_price_usd = Decimal('0.00')
+                
+                if currency_type == 'USD':
+                    actual_unit_price_usd = item.unit_price
+                elif currency_type == 'SOS':
+                    if usd_to_sos_rate > 0:
+                        actual_unit_price_usd = item.unit_price / usd_to_sos_rate
+                elif currency_type == 'ETB':
+                    # Use stored rate if available, else current
+                    rate = item.sale.exchange_rate_at_sale if item.sale.exchange_rate_at_sale else usd_to_etb_rate
+                    if rate > 0:
+                        actual_unit_price_usd = item.unit_price / rate
+
+                item_premium_profit_usd = (actual_unit_price_usd - product_sell_usd) * qty
+                
+                base_p += item_base_profit_usd
+                premium_p += item_premium_profit_usd
+                
+            return base_p, premium_p
+
+        # Calculate for all 3 types
+        # Note: optimizing with aggregate is harder due to currency logic, iterating today's items is likely fine for performance volume
         
-        # Calculate profit from USD sales
-        print("DEBUG: Processing USD Sales for profit...")
-        for sale in today_usd_sales:
-            print(f"  - Processing USD Sale ID {sale.id}")
-            for item in sale.items.select_related('product'): # items is the related_name for SaleItemUSD
-                try:
-                    item_profit_usd = item.get_profit_usd() # Returns Decimal profit in USD
-                    item_base_profit = item.get_base_profit_usd()
-                    item_premium_profit = item.get_premium_profit_usd()
-                    
-                    print(f"    - USD Item: {item.product.name}, Total Profit: {item_profit_usd}, Base: {item_base_profit}, Premium: {item_premium_profit}")
-                    today_profit_usd_component += item_profit_usd
-                    today_base_profit += item_base_profit
-                    today_premium_profit += item_premium_profit
-                except Exception as e:
-                    print(f"ERROR calculating USD profit for {item.product.name} (SaleItemUSD ID {item.id}): {e}")
+        # USD Items
+        items_usd = SaleItemUSD.objects.filter(sale__date_created__date=today).select_related('product', 'sale')
+        base_usd, prem_usd = calculate_profit(items_usd, 'USD')
         
-        # Add USD component to total
-        today_profit_total += today_profit_usd_component
-        print(f"DEBUG: Profit after USD sales: {today_profit_total}")
-
-        # Calculate profit from SOS sales
-        print("DEBUG: Processing SOS Sales for profit...")
-        for sale in today_sos_sales:
-            print(f"  - Processing SOS Sale ID {sale.id}")
-            for item in sale.items.select_related('product'): # items is the related_name for SaleItemSOS
-                try:
-                    # get_profit_usd for SaleItemSOS already converts SOS profit to USD
-                    item_profit_usd_converted = item.get_profit_usd() # Returns Decimal profit in USD
-                    item_base_profit = item.get_base_profit_usd()
-                    item_premium_profit = item.get_premium_profit_usd()
-                    
-                    print(f"    - SOS Item: {item.product.name}, Total Profit: {item_profit_usd_converted}, Base: {item_base_profit}, Premium: {item_premium_profit}")
-                    today_profit_sos_in_usd += item_profit_usd_converted # Accumulate USD-converted SOS profit
-                    today_base_profit += item_base_profit
-                    today_premium_profit += item_premium_profit
-                    # e.g., item_profit_sos_raw = item.unit_price * item.quantity - (item.product.purchase_price * currency_settings.usd_to_sos_rate) * item.quantity
-                    # today_profit_sos_raw += item_profit_sos_raw 
-                except Exception as e:
-                    print(f"ERROR calculating SOS profit for {item.product.name} (SaleItemSOS ID {item.id}): {e}")
+        # SOS Items
+        items_sos = SaleItemSOS.objects.filter(sale__date_created__date=today).select_related('product', 'sale')
+        base_sos, prem_sos = calculate_profit(items_sos, 'SOS')
         
-        # Add SOS component (converted to USD) to total
-        today_profit_total += today_profit_sos_in_usd
-
-        # Calculate profit from ETB sales
-        print("DEBUG: Processing ETB Sales for profit...")
-        for sale in today_etb_sales:
-            print(f"  - Processing ETB Sale ID {sale.id}")
-            for item in sale.items.select_related('product'): # items is the related_name for SaleItemETB
-                try:
-                    # get_profit_usd for SaleItemETB already converts ETB profit to USD
-                    item_profit_usd_converted = item.get_profit_usd() # Returns Decimal profit in USD
-                    item_base_profit = item.get_base_profit_usd()
-                    item_premium_profit = item.get_premium_profit_usd()
-                    
-                    print(f"    - ETB Item: {item.product.name}, Total Profit: {item_profit_usd_converted}, Base: {item_base_profit}, Premium: {item_premium_profit}")
-                    today_profit_etb_in_usd += item_profit_usd_converted # Accumulate USD-converted ETB profit
-                    today_base_profit += item_base_profit
-                    today_premium_profit += item_premium_profit
-                except Exception as e:
-                    print(f"ERROR calculating ETB profit for {item.product.name} (SaleItemETB ID {item.id}): {e}")
+        # ETB Items
+        items_etb = SaleItemETB.objects.filter(sale__date_created__date=today).select_related('product', 'sale')
+        base_etb, prem_etb = calculate_profit(items_etb, 'ETB')
         
-        # Add ETB component (converted to USD) to total
-        today_profit_total += today_profit_etb_in_usd
-        print(f"DEBUG: Final calculated today_profit_total (in USD): {today_profit_total}")
-        print(f"DEBUG:   - Profit from USD sales (USD component): {today_profit_usd_component}")
-        print(f"DEBUG:   - Profit from SOS sales (converted to USD): {today_profit_sos_in_usd}")
-        print(f"DEBUG:   - Profit from ETB sales (converted to USD): {today_profit_etb_in_usd}")
+        # Sum USD Profits
+        total_base_profit_usd = base_usd + base_sos + base_etb
+        total_premium_profit_usd = prem_usd + prem_sos + prem_etb
+        
+        # Convert to ETB for display
+        today_base_profit = total_base_profit_usd * usd_to_etb_rate
+        today_premium_profit = total_premium_profit_usd * usd_to_etb_rate
+        today_profit_in_etb = today_base_profit + today_premium_profit
 
-    # --- END PROFIT CALCULATION ---
-
-    # --- COMPREHENSIVE DEBT CALCULATION (Customer Model - Includes All Sources) ---
-    currency_settings_for_debt = currency_settings # Reuse fetched settings
-    exchange_rate_for_calc = Decimal(str(currency_settings_for_debt.usd_to_sos_rate)) if currency_settings_for_debt else Decimal('8000.00')
-
-    # 1. Get total debt from Customer model (includes all sources)
+    # --- DEBT CALCULATION (ETB Centric) ---
     total_debt_usd = Customer.get_total_debt_usd()
     total_debt_sos = Customer.get_total_debt_sos()
     total_debt_etb = Customer.get_total_debt_etb()
-
-    # 2. Convert SOS/ETB debt to USD for combined display
-    total_debt_sos_in_usd = Decimal('0.00')
-    if total_debt_sos > 0 and currency_settings_for_debt:
-        total_debt_sos_in_usd = currency_settings_for_debt.convert_sos_to_usd(total_debt_sos)
+    
+    # Convert all to ETB
+    debt_usd_in_etb = total_debt_usd * usd_to_etb_rate
+    debt_sos_in_etb = Decimal('0.00')
+    if usd_to_sos_rate > 0:
+        debt_sos_in_etb = (total_debt_sos / usd_to_sos_rate) * usd_to_etb_rate
         
-    total_debt_etb_in_usd = Decimal('0.00')
-    if total_debt_etb > 0 and currency_settings_for_debt:
-        total_debt_etb_in_usd = currency_settings_for_debt.convert_etb_to_usd(total_debt_etb)
-
-    # 3. Combined total debt in USD for dashboard display
-    total_debt_usd_combined = total_debt_usd + total_debt_sos_in_usd + total_debt_etb_in_usd
-
-    # 4. Count customers with debt
-    customers_with_debt_count = Customer.get_customers_with_debt().count()
-    # --- End of Comprehensive Debt Calculation ---
-
-    # Legacy total_debt for backward compatibility (if needed elsewhere)
-    # total_debt = total_debt_usd_combined # Or total_debt_usd, depending on context
-
-    # Weekly sales data (last 7 days) - for chart
-    weekly_labels = []
-    weekly_data = []
-    for i in range(6, -1, -1):  # Last 7 days including today
-        date = today - timedelta(days=i)
-        # Note: This part still uses the legacy Sale model for the chart data.
-        # You might want to update this to use SaleUSD/SaleSOS if the chart should reflect new data.
-        daily_sales_legacy = Sale.objects.filter(date_created__date=date) 
-        daily_revenue_sos_legacy = daily_sales_legacy.aggregate(total=Sum('total_amount'))['total'] or 0
-        if currency_settings and daily_revenue_sos_legacy > 0:
-            daily_revenue_usd = float(currency_settings.convert_sos_to_usd(Decimal(str(daily_revenue_sos_legacy))))
-        else:
-            daily_revenue_usd = 0
-        weekly_labels.append(date.strftime('%a'))
-        weekly_data.append(daily_revenue_usd)
-
-    # Top selling items (this week) - includes USD, SOS, and legacy sales
-    week_start = today - timedelta(days=7)
-    
-    # Get top selling items from all three models
-    from django.db.models import Q, F
-    
-    # Create a combined query for top selling items
-    top_selling_items = Product.objects.filter(
-        Q(saleitem__sale__date_created__date__gte=week_start) |  # Legacy sales
-        Q(saleitemusd__sale__date_created__date__gte=week_start) |  # USD sales
-        Q(saleitemsos__sale__date_created__date__gte=week_start)  # SOS sales
-    ).annotate(
-        # Legacy sales quantities and revenue
-        legacy_quantity=Sum('saleitem__quantity'),
-        legacy_revenue_usd=Sum(
-            Case(
-                When(saleitem__sale__currency='USD', then='saleitem__total_price'),
-                default=Value(0),
-                output_field=DecimalField()
-            )
-        ),
-        legacy_revenue_sos=Sum(
-            Case(
-                When(saleitem__sale__currency='SOS', then='saleitem__total_price'),
-                default=Value(0),
-                output_field=DecimalField()
-            )
-        ),
-        # USD sales quantities and revenue
-        usd_quantity=Sum('saleitemusd__quantity'),
-        usd_revenue=Sum('saleitemusd__total_price'),
-        # SOS sales quantities and revenue
-        sos_quantity=Sum('saleitemsos__quantity'),
-        sos_revenue=Sum('saleitemsos__total_price')
-    ).annotate(
-        # Combined quantities and revenue
-        total_quantity=Coalesce('legacy_quantity', 0, output_field=DecimalField()) + Coalesce('usd_quantity', 0, output_field=DecimalField()) + Coalesce('sos_quantity', 0, output_field=DecimalField()),
-        total_revenue_usd=Coalesce('legacy_revenue_usd', 0, output_field=DecimalField()) + Coalesce('usd_revenue', 0, output_field=DecimalField()),
-        total_revenue_sos=Coalesce('legacy_revenue_sos', 0, output_field=DecimalField()) + Coalesce('sos_revenue', 0, output_field=DecimalField())
-    ).filter(
-        total_quantity__gt=0  # Only show items that were actually sold
-    ).order_by('-total_quantity')[:5]
-    
-    for item in top_selling_items:
-        if item.total_revenue_sos and item.total_revenue_sos > 0 and currency_settings:
-            item.total_revenue_sos_in_usd = currency_settings.convert_sos_to_usd(item.total_revenue_sos)
-        else:
-            item.total_revenue_sos_in_usd = Decimal('0.00')
-        item.total_revenue_usd_combined = (item.total_revenue_usd or Decimal('0.00')) + item.total_revenue_sos_in_usd
-
-    # Low stock products
-    low_stock_products = Product.objects.filter(
-        current_stock__lte=F('low_stock_threshold'),
-        is_active=True
-    ).order_by('current_stock')
-
-    # Inventory summary counts
-    total_products = Product.objects.filter(is_active=True).count()
-    low_stock_count = low_stock_products.count()
-    out_of_stock_count = Product.objects.filter(
-        current_stock=0,
-        is_active=True
-    ).count()
-
-    # Top debtors - from Customer model
+    total_debt_combined_etb = debt_usd_in_etb + debt_sos_in_etb + total_debt_etb
     top_debtors = Customer.get_customers_with_debt()[:5]
 
-    # Recent activity (last 10 sales) - includes USD, SOS, and legacy sales
-    # Get recent sales from all three models and combine them
-    recent_usd_sales = SaleUSD.objects.select_related('customer', 'staff_member').order_by('-date_created')[:10]
-    recent_sos_sales = SaleSOS.objects.select_related('customer', 'staff_member').order_by('-date_created')[:10]
-    recent_etb_sales = SaleETB.objects.select_related('customer', 'staff_member').order_by('-date_created')[:10]
-    recent_legacy_sales = Sale.objects.select_related('customer', 'staff_member').order_by('-date_created')[:10]
+    # --- WEEKLY SALES CHART (ETB) ---
+    weekly_labels = []
+    weekly_data = [] # in ETB
     
-    # Combine all recent sales and sort by date
+    for i in range(6, -1, -1):
+        date = today - timedelta(days=i)
+        
+        # 1. USD -> ETB
+        day_usd = SaleUSD.objects.filter(date_created__date=date).aggregate(
+            total=Coalesce(Sum('total_amount'), Value(Decimal('0.00')))
+        )['total']
+        val_usd_in_etb = day_usd * usd_to_etb_rate
+        
+        # 2. SOS -> USD -> ETB
+        day_sos = SaleSOS.objects.filter(date_created__date=date).aggregate(
+            total=Coalesce(Sum('total_amount'), Value(Decimal('0.00')))
+        )['total']
+        val_sos_in_etb = Decimal('0.00')
+        if usd_to_sos_rate > 0:
+            val_sos_in_etb = (day_sos / usd_to_sos_rate) * usd_to_etb_rate
+            
+        # 3. ETB (Native)
+        day_etb = SaleETB.objects.filter(date_created__date=date).aggregate(
+            total=Coalesce(Sum('total_amount'), Value(Decimal('0.00')))
+        )['total']
+        
+        total_day_etb = val_usd_in_etb + val_sos_in_etb + day_etb
+        
+        weekly_labels.append(date.strftime('%a'))
+        weekly_data.append(float(total_day_etb))
+
+    # --- TOP SELLING PRODUCTS & RECENT ACTIVITY ---
+    # Top Items by QUANTITY with ACTUAL sale prices (not current product prices)
+    week_start = today - timedelta(days=7)
+    
+    # Calculate revenue from actual sale items, not product prices
+    # This ensures accuracy when product prices change
+    top_selling_items_data = []
+    
+    # Get all sale items from the past week
+    usd_items = SaleItemUSD.objects.filter(
+        sale__date_created__date__gte=week_start
+    ).select_related('product', 'sale')
+    
+    sos_items = SaleItemSOS.objects.filter(
+        sale__date_created__date__gte=week_start
+    ).select_related('product', 'sale')
+    
+    etb_items = SaleItemETB.objects.filter(
+        sale__date_created__date__gte=week_start
+    ).select_related('product', 'sale')
+    
+    # Aggregate by product
+    product_revenue = {}
+    
+    # Process USD items
+    for item in usd_items:
+        product_id = item.product.id
+        if product_id not in product_revenue:
+            product_revenue[product_id] = {
+                'product': item.product,
+                'total_qty': Decimal('0'),
+                'total_revenue_usd': Decimal('0'),
+            }
+        product_revenue[product_id]['total_qty'] += item.quantity
+        # Use actual sale price, not current product price
+        product_revenue[product_id]['total_revenue_usd'] += item.total_price
+    
+    # Process SOS items
+    for item in sos_items:
+        product_id = item.product.id
+        if product_id not in product_revenue:
+            product_revenue[product_id] = {
+                'product': item.product,
+                'total_qty': Decimal('0'),
+                'total_revenue_usd': Decimal('0'),
+            }
+        product_revenue[product_id]['total_qty'] += item.quantity
+        # Convert SOS to USD, then to ETB
+        if usd_to_sos_rate > 0:
+            revenue_usd = item.total_price / usd_to_sos_rate
+            product_revenue[product_id]['total_revenue_usd'] += revenue_usd
+    
+    # Process ETB items
+    for item in etb_items:
+        product_id = item.product.id
+        if product_id not in product_revenue:
+            product_revenue[product_id] = {
+                'product': item.product,
+                'total_qty': Decimal('0'),
+                'total_revenue_usd': Decimal('0'),
+            }
+        product_revenue[product_id]['total_qty'] += item.quantity
+        # Convert ETB to USD using stored rate or current rate
+        rate = item.sale.exchange_rate_at_sale if item.sale.exchange_rate_at_sale else usd_to_etb_rate
+        if rate > 0:
+            revenue_usd = item.total_price / rate
+            product_revenue[product_id]['total_revenue_usd'] += revenue_usd
+    
+    # Convert to list and calculate ETB revenue
+    for product_id, data in product_revenue.items():
+        data['total_revenue_etb'] = data['total_revenue_usd'] * usd_to_etb_rate
+        # Add product name for template compatibility
+        data['name'] = data['product'].name
+        top_selling_items_data.append(data)
+    
+    # Sort by quantity and take top 5
+    top_selling_items_data.sort(key=lambda x: x['total_qty'], reverse=True)
+    top_selling_items = top_selling_items_data[:5]
+
+    # Recent Activity (Normalized to ETB)
     recent_activity = []
-    for sale in recent_usd_sales:
-        recent_activity.append({
-            'id': sale.id,
-            'customer': sale.customer,
-            'staff_member': sale.staff_member,
-            'total_amount': sale.total_amount,
-            'total_amount_usd': sale.total_amount,  # Already in USD
-            'currency': 'USD',
-            'date_created': sale.date_created,
-            'type': 'USD Sale'
-        })
     
-    for sale in recent_sos_sales:
-        # Convert SOS to USD for display
-        sos_in_usd = Decimal('0.00')
-        if currency_settings and sale.total_amount > 0:
-            sos_in_usd = currency_settings.convert_sos_to_usd(sale.total_amount)
-        recent_activity.append({
-            'id': sale.id,
-            'customer': sale.customer,
-            'staff_member': sale.staff_member,
-            'total_amount': sale.total_amount,
-            'total_amount_usd': sos_in_usd,
-            'currency': 'SOS',
-            'date_created': sale.date_created,
-            'type': 'SOS Sale'
-        })
-    
-    for sale in recent_etb_sales:
-        # Convert ETB to USD for display
-        etb_in_usd = Decimal('0.00')
-        if currency_settings and sale.total_amount > 0:
-            etb_in_usd = currency_settings.convert_etb_to_usd(sale.total_amount)
-        recent_activity.append({
-            'id': sale.id,
-            'customer': sale.customer,
-            'staff_member': sale.staff_member,
-            'total_amount': sale.total_amount,
-            'total_amount_usd': etb_in_usd,
-            'currency': 'ETB',
-            'date_created': sale.date_created,
-            'type': 'ETB Sale'
-        })
-    
-    for sale in recent_legacy_sales:
-        # Convert legacy sale to USD based on currency
-        legacy_in_usd = Decimal('0.00')
-        if sale.currency == 'USD':
-            legacy_in_usd = sale.total_amount
-        elif sale.currency == 'SOS' and currency_settings:
-            legacy_in_usd = currency_settings.convert_sos_to_usd(sale.total_amount)
-        elif sale.currency == 'ETB' and currency_settings:
-            legacy_in_usd = currency_settings.convert_etb_to_usd(sale.total_amount)
-        recent_activity.append({
-            'id': sale.id,
-            'customer': sale.customer,
-            'staff_member': sale.staff_member,
-            'total_amount': sale.total_amount,
-            'total_amount_usd': legacy_in_usd,
-            'currency': sale.currency,
-            'date_created': sale.date_created,
-            'type': 'Legacy Sale'
-        })
-    
-    # Sort by date and take the most recent 10
+    def add_recent(queryset, currency, conversion_func):
+        for sale in queryset:
+            val_etb = conversion_func(sale)
+            recent_activity.append({
+                'id': sale.id,
+                'customer': sale.customer if sale.customer else "Walk-in Customer",
+                'user': sale.user,
+                'amount_etb': val_etb,
+                'original_amount': sale.total_amount,
+                'currency': currency,
+                'date_created': sale.date_created,
+                'is_paid': sale.is_completed # Simplify status
+            })
+
+    # USD Sales
+    add_recent(SaleUSD.objects.select_related('customer', 'user').order_by('-date_created')[:10], 'USD', 
+               lambda s: s.total_amount * usd_to_etb_rate)
+    # SOS Sales
+    add_recent(SaleSOS.objects.select_related('customer', 'user').order_by('-date_created')[:10], 'SOS', 
+               lambda s: (s.total_amount / usd_to_sos_rate * usd_to_etb_rate) if usd_to_sos_rate > 0 else 0)
+    # ETB Sales
+    add_recent(SaleETB.objects.select_related('customer', 'user').order_by('-date_created')[:10], 'ETB', 
+               lambda s: s.total_amount) # Already ETB
+
     recent_activity.sort(key=lambda x: x['date_created'], reverse=True)
     recent_activity = recent_activity[:10]
 
-    # Categories for product creation (admin only)
+    # Inventory Counts
+    low_stock_products = Product.objects.filter(current_stock__lte=F('low_stock_threshold'), is_active=True).order_by('current_stock')
+    total_products = Product.objects.filter(is_active=True).count()
+    low_stock_count = low_stock_products.count()
+    out_of_stock_count = Product.objects.filter(current_stock=0, is_active=True).count()
     categories = Category.objects.all().order_by('name')
 
-    # --- CONTEXT PREPARATION ---
     context = {
-        'today_revenue': today_revenue,
-        'today_revenue_usd': today_revenue_usd,
-        'today_revenue_sos': today_revenue_sos,
-        'today_revenue_etb': today_revenue_etb,
+        # Revenue
+        'today_revenue_etb': today_revenue_etb_total,
         'today_transactions': today_transactions,
         
-        # --- Corrected Profit Context Variables ---
-        # 'today_profit' will hold the total profit in USD
-        # 'today_profit_usd' will hold the USD component for display (as float for template)
-        # 'today_profit_sos' will hold the SOS component converted to USD for display (as float for template)
-        'total_debt': total_debt_usd_combined,
-        'total_debt_usd': total_debt_usd_combined,
-        'total_debt_sos': total_debt_sos,
-        'total_debt_etb': total_debt_etb,
-        'total_debt_usd_only': total_debt_usd,
-        'exchange_rate': exchange_rate_for_calc,
-        'customers_with_debt': customers_with_debt_count,
+        # Debt
+        'total_debt_etb': total_debt_combined_etb,
+        'customers_with_debt': Customer.get_customers_with_debt().count(),
         
-        'weekly_labels': json.dumps(weekly_labels),
-        'weekly_data': json.dumps(weekly_data),
+        # Charts & Lists
+        'weekly_labels': weekly_labels,
+        'weekly_data': weekly_data, # Now in ETB
         'top_selling_items': top_selling_items,
-        'low_stock_products': low_stock_products,
-        'top_debtors': top_debtors,
         'recent_activity': recent_activity,
+        'top_debtors': top_debtors,
+        
+        # Inventory
         'total_products': total_products,
         'low_stock_count': low_stock_count,
         'out_of_stock_count': out_of_stock_count,
+        'low_stock_products': low_stock_products,
         'categories': categories,
+        
+        # Settings
+        'exchange_rate': usd_to_sos_rate,
+        'usd_to_etb_rate': usd_to_etb_rate,
     }
 
-    # Add profit to context (set to 0 for non-superusers)
     if request.user.is_superuser:
-        # Convert total profit to ETB for display
-        today_profit_in_etb = Decimal('0.00')
-        if currency_settings and today_profit_total > 0:
-            today_profit_in_etb = currency_settings.convert_usd_to_etb(Decimal(str(today_profit_total)))
-        
-        # Pass profit values as floats to the template context for easier handling with floatformat
-        context['today_profit'] = float(today_profit_total) # Total profit in USD
-        context['today_profit_in_etb'] = float(today_profit_in_etb) # Total profit converted to ETB
-        context['today_profit_usd'] = float(today_profit_usd_component) # Profit from USD sales in USD
-        context['today_profit_sos'] = float(today_profit_sos_in_usd) # Profit from SOS sales converted to USD
-        context['today_profit_etb'] = float(today_profit_etb_in_usd) # Profit from ETB sales converted to USD
-        context['today_base_profit'] = float(today_base_profit) # Base profit (minimum price - purchase price)
-        context['today_premium_profit'] = float(today_premium_profit) # Premium profit (actual price - minimum price)
-    else:
-        # Set profit values to 0 for non-superusers (so template doesn't break)
-        context['today_profit'] = 0.0
-        context['today_profit_usd'] = 0.0
-        context['today_profit_sos'] = 0.0
-        context['today_profit_etb'] = 0.0
-        context['today_base_profit'] = 0.0
-        context['today_premium_profit'] = 0.0 
+        context.update({
+            'today_profit_in_etb': today_profit_in_etb,
+            'today_base_profit': today_base_profit,
+            'today_premium_profit': today_premium_profit,
+        })
 
-    print(f"DEBUG: Final context profit values sent to template:")
-    print(f"  - today_profit (total USD): {context.get('today_profit')}")
-    print(f"  - today_profit_usd (USD component): {context.get('today_profit_usd')}")
-    print(f"  - today_profit_sos (SOS converted to USD): {context.get('today_profit_sos')}")
-    print(f"  - today_profit_etb (ETB converted to USD): {context.get('today_profit_etb')}")
-    
     return render(request, 'core/dashboard.html', context)
 
-@login_required
+@superuser_required
 def sales_list(request):
-    if not has_sell_permission(request.user):
-        messages.error(request, "Access denied. Sales permission required.")
-        return redirect('core:inventory_list')
+    # Permission check removed
     
     # Get sales from all three models
-    usd_sales = SaleUSD.objects.select_related('customer', 'staff_member').order_by('-date_created')
-    sos_sales = SaleSOS.objects.select_related('customer', 'staff_member').order_by('-date_created')
-    etb_sales = SaleETB.objects.select_related('customer', 'staff_member').order_by('-date_created')
-    legacy_sales = Sale.objects.select_related('customer', 'staff_member').order_by('-date_created')
+    usd_sales = SaleUSD.objects.select_related('customer', 'user').order_by('-date_created')
+    sos_sales = SaleSOS.objects.select_related('customer', 'user').order_by('-date_created')
+    etb_sales = SaleETB.objects.select_related('customer', 'user').order_by('-date_created')
+    legacy_sales = Sale.objects.select_related('customer', 'user').order_by('-date_created')
     
     # Search functionality
     search = request.GET.get('search', '')
@@ -485,7 +414,7 @@ def sales_list(request):
             'id': sale.id,
             'transaction_id': sale.transaction_id,
             'customer': sale.customer,
-            'staff_member': sale.staff_member,
+            'user': sale.user,
             'currency': 'USD',
             'total_amount': sale.total_amount,
             'amount_paid': sale.amount_paid,
@@ -500,7 +429,7 @@ def sales_list(request):
             'id': sale.id,
             'transaction_id': sale.transaction_id,
             'customer': sale.customer,
-            'staff_member': sale.staff_member,
+            'user': sale.user,
             'currency': 'SOS',
             'total_amount': sale.total_amount,
             'amount_paid': sale.amount_paid,
@@ -515,7 +444,7 @@ def sales_list(request):
             'id': sale.id,
             'transaction_id': sale.transaction_id,
             'customer': sale.customer,
-            'staff_member': sale.staff_member,
+            'user': sale.user,
             'currency': 'ETB',
             'total_amount': sale.total_amount,
             'amount_paid': sale.amount_paid,
@@ -530,7 +459,7 @@ def sales_list(request):
             'id': sale.id,
             'transaction_id': sale.transaction_id,
             'customer': sale.customer,
-            'staff_member': sale.staff_member,
+            'user': sale.user,
             'currency': sale.currency,
             'total_amount': sale.total_amount,
             'amount_paid': sale.amount_paid,
@@ -556,12 +485,9 @@ def sales_list(request):
     
     return render(request, 'core/sales_list.html', context)
 
-@login_required
+# Allow unauthenticated access for walk-in sales
 def create_sale(request):
-    if not has_sell_permission(request.user):
-        messages.error(request, "Access denied. Sales permission required.")
-        return redirect('core:inventory_list')
-    
+
     if request.method == 'POST':
         try:
             print("=== STARTING SALE CREATION ===")
@@ -578,9 +504,6 @@ def create_sale(request):
             print(f"Currency: {currency}")
             print(f"Amount paid: {amount_paid_str}")
             
-            if not customer_id:
-                raise ValueError("Customer is required")
-            
             # Convert amount_paid safely
             try:
                 amount_paid = Decimal(amount_paid_str)
@@ -592,15 +515,25 @@ def create_sale(request):
             exchange_rate = currency_settings.usd_to_sos_rate if currency_settings else Decimal('8000.00')
             etb_exchange_rate = currency_settings.usd_to_etb_rate if currency_settings else Decimal('100.00')
             
-            # Get customer
-            customer = Customer.objects.get(id=customer_id)
-            print(f"Customer found: {customer.name}")
+            # Get customer (optional - allows anonymous sales)
+            customer = None
+            if customer_id:
+                try:
+                    customer = Customer.objects.get(id=customer_id)
+                    print(f"Customer found: {customer.name}")
+                except Customer.DoesNotExist:
+                    print(f"Customer ID {customer_id} not found, creating anonymous sale")
+            else:
+                print("No customer ID provided, creating anonymous sale")
             
             # Create sale using appropriate model based on currency
+            # user is optional - can be None for anonymous/admin operations
+            sale_user = request.user if request.user.is_authenticated else None
+            
             if currency == 'USD':
                 sale = SaleUSD.objects.create(
                     customer=customer,
-                    staff_member=request.user,
+                    user=sale_user,
                     amount_paid=amount_paid,
                     total_amount=Decimal('0.00'),  # Will be calculated
                     debt_amount=Decimal('0.00')    # Will be calculated
@@ -608,7 +541,7 @@ def create_sale(request):
             elif currency == 'SOS':  # SOS currency
                 sale = SaleSOS.objects.create(
                     customer=customer,
-                    staff_member=request.user,
+                    user=sale_user,
                     amount_paid=amount_paid,
                     total_amount=Decimal('0.00'),  # Will be calculated
                     debt_amount=Decimal('0.00')    # Will be calculated
@@ -616,7 +549,7 @@ def create_sale(request):
             else:  # ETB currency
                 sale = SaleETB.objects.create(
                     customer=customer,
-                    staff_member=request.user,
+                    user=sale_user,
                     amount_paid=amount_paid,
                     total_amount=Decimal('0.00'),  # Will be calculated
                     debt_amount=Decimal('0.00'),   # Will be calculated
@@ -645,7 +578,7 @@ def create_sale(request):
                 if product_id and quantity_str:
                     try:
                         product = Product.objects.get(id=product_id)
-                        quantity = int(quantity_str)
+                        quantity = Decimal(quantity_str)
                         
                         if quantity > 0:
                             # CRITICAL: Check stock availability before processing
@@ -710,17 +643,17 @@ def create_sale(request):
                             total_price = unit_price * quantity
                             
                             # Create sale item using appropriate model based on currency
+                            # Create instance first, then validate before saving
                             if currency == 'USD':
-                                sale_item = SaleItemUSD.objects.create(
+                                sale_item = SaleItemUSD(
                                     sale=sale,
                                     product=product,
                                     quantity=quantity,
                                     unit_price=unit_price,
                                     total_price=total_price
                                 )
-
                             elif currency == 'SOS':  # SOS currency
-                                sale_item = SaleItemSOS.objects.create(
+                                sale_item = SaleItemSOS(
                                     sale=sale,
                                     product=product,
                                     quantity=quantity,
@@ -728,13 +661,26 @@ def create_sale(request):
                                     total_price=total_price
                                 )
                             else:  # ETB currency
-                                sale_item = SaleItemETB.objects.create(
+                                sale_item = SaleItemETB(
                                     sale=sale,
                                     product=product,
                                     quantity=quantity,
                                     unit_price=unit_price,
                                     total_price=total_price
                                 )
+                            
+                            # Validate sale item (unit validation - PIECE/METER)
+                            try:
+                                sale_item.full_clean()
+                            except ValidationError as e:
+                                error_messages = []
+                                for field, errors in e.error_dict.items():
+                                    error_messages.extend([f"{field}: {error}" for error in errors])
+                                error_message = "; ".join(error_messages)
+                                raise ValueError(f"Validation error for {product.name}: {error_message}")
+                            
+                            # Save after validation passes
+                            sale_item.save()
                             print(f"SaleItem created: {sale_item.id}")
                             
                             total_amount += total_price
@@ -768,8 +714,8 @@ def create_sale(request):
             # Sale amounts are now stored in original currency - no conversion needed
             print(f"Sale amounts stored in original currency: {currency}")
             
-            # FIXED: Update customer debt after sale is saved
-            if sale.debt_amount > 0:
+            # FIXED: Update customer debt after sale is saved (only if customer exists)
+            if sale.debt_amount > 0 and customer:
                 print(f"Updating customer debt: {sale.debt_amount} {currency}")
                 if currency == 'USD':
                     old_debt = customer.total_debt_usd
@@ -786,11 +732,15 @@ def create_sale(request):
                 customer.save()
                 
                 # Log debt update
-                log_audit_action(
-                    request.user, 'DEBT_ADDED', 'Customer', customer.id,
-                    f'Added debt of {sale.debt_amount} {currency} for sale #{sale.transaction_id}',
-                    request.META.get('REMOTE_ADDR')
-                )
+                audit_user = request.user if request.user.is_authenticated else None
+                if audit_user:
+                    log_audit_action(
+                        audit_user, 'DEBT_ADDED', 'Customer', customer.id,
+                        f'Added debt of {sale.debt_amount} {currency} for sale #{sale.transaction_id}',
+                        request.META.get('REMOTE_ADDR')
+                    )
+            elif sale.debt_amount > 0 and not customer:
+                print(f"Sale has debt but no customer - anonymous sale with debt: {sale.debt_amount} {currency}")
             
             # FIXED: Update inventory after sale is saved
             for item in sale.items.all():
@@ -810,7 +760,7 @@ def create_sale(request):
                     'quantity_change': -item.quantity,
                     'old_quantity': old_stock,
                     'new_quantity': product.current_stock,
-                    'staff_member': request.user,
+                    'user': request.user,
                     'notes': f'Sold in Sale #{sale.transaction_id}'
                 }
                 
@@ -828,6 +778,40 @@ def create_sale(request):
             # Calculate and update the sale total amount
             sale.calculate_total()
             print(f"Sale total calculated: ${sale.total_amount}")
+            
+            # Check debt and customer requirement
+            debt_amount = max(Decimal('0.00'), sale.total_amount - sale.amount_paid)
+            
+            if debt_amount > 0 and not customer:
+                # Strictly require customer for credit sales
+                error_message = f"Incomplete payment (Debt: {debt_amount}). You must select a customer for credit sales."
+                print(f"Validation Error: {error_message}")
+                
+                # Delete the invalid sale
+                sale.delete()
+                
+                if is_ajax:
+                    return JsonResponse({'success': False, 'error': error_message}, status=400)
+                messages.error(request, error_message)
+                return redirect('core:create_sale')
+            
+            # Validate sale (standard model validation)
+            try:
+                sale.full_clean()
+            except ValidationError as e:
+                error_messages = []
+                for field, errors in e.error_dict.items():
+                    error_messages.extend([f"{field}: {error}" for error in errors])
+                error_message = "; ".join(error_messages)
+                print(f"Sale validation error: {error_message}")
+                
+                # Delete the invalid sale
+                sale.delete()
+                
+                if is_ajax:
+                    return JsonResponse({'success': False, 'error': error_message}, status=400)
+                messages.error(request, error_message)
+                return redirect('core:create_sale')
             
             # Log audit action
             log_audit_action(
@@ -878,10 +862,10 @@ def create_sale(request):
     return render(request, 'core/create_sale.html', context)
     
 @login_required
+@login_required
 def sale_detail(request, sale_id, currency=None):
-    if not has_sell_permission(request.user):
-        messages.error(request, "Access denied. Sales permission required.")
-        return redirect('core:inventory_list')
+    # Access control: Login required (handled by decorator)
+
     
     # Try to find the sale in all three models
     sale = None
@@ -890,7 +874,7 @@ def sale_detail(request, sale_id, currency=None):
     # Check USD sales first
     if currency == 'USD' or currency is None:
         try:
-            sale = SaleUSD.objects.select_related('customer', 'staff_member').prefetch_related('items__product').get(id=sale_id)
+            sale = SaleUSD.objects.select_related('customer', 'user').prefetch_related('items__product').get(id=sale_id)
             sale_type = 'USD'
         except SaleUSD.DoesNotExist:
             pass
@@ -898,7 +882,7 @@ def sale_detail(request, sale_id, currency=None):
     # Check SOS sales if not found in USD
     if sale is None and (currency == 'SOS' or currency is None):
         try:
-            sale = SaleSOS.objects.select_related('customer', 'staff_member').prefetch_related('items__product').get(id=sale_id)
+            sale = SaleSOS.objects.select_related('customer', 'user').prefetch_related('items__product').get(id=sale_id)
             sale_type = 'SOS'
         except SaleSOS.DoesNotExist:
             pass
@@ -906,7 +890,7 @@ def sale_detail(request, sale_id, currency=None):
     # Check ETB sales if not found in USD or SOS
     if sale is None and (currency == 'ETB' or currency is None):
         try:
-            sale = SaleETB.objects.select_related('customer', 'staff_member').prefetch_related('items__product').get(id=sale_id)
+            sale = SaleETB.objects.select_related('customer', 'user').prefetch_related('items__product').get(id=sale_id)
             sale_type = 'ETB'
         except SaleETB.DoesNotExist:
             pass
@@ -914,7 +898,7 @@ def sale_detail(request, sale_id, currency=None):
     # Check legacy sales if not found in USD, SOS, or ETB
     if sale is None and (currency == 'Legacy' or currency is None):
         try:
-            sale = Sale.objects.select_related('customer', 'staff_member').prefetch_related('items__product').get(id=sale_id)
+            sale = Sale.objects.select_related('customer', 'user').prefetch_related('items__product').get(id=sale_id)
             sale_type = 'Legacy'
         except Sale.DoesNotExist:
             pass
@@ -932,12 +916,9 @@ def sale_detail(request, sale_id, currency=None):
     
     return render(request, 'core/sale_detail.html', context)
 
-@login_required
+@superuser_required
 def inventory_list(request):
-    if not has_restock_permission(request.user):
-        messages.error(request, "Access denied. Inventory permission required.")
-        return redirect('core:sales_list')
-    
+
     products = Product.objects.select_related('category').order_by('name')
     
     # Search functionality
@@ -991,16 +972,35 @@ def inventory_list(request):
     
     return render(request, 'core/inventory_list.html', context)
 
-@login_required
-def add_sale_item(request, sale_id):
+@superuser_required
+def add_sale_item(request, currency, sale_id):
     """
     Add an item to an existing sale
     """
-    if not has_sell_permission(request.user):
-        messages.error(request, "Access denied. Sales permission required.")
-        return redirect('core:sales_list')
+    # Permission check removed
+
     
-    sale = get_object_or_404(Sale, id=sale_id)
+    sale = None
+    model_class = None
+    item_model_class = None
+    
+    if currency == 'USD':
+        model_class = SaleUSD
+        item_model_class = SaleItemUSD
+    elif currency == 'SOS':
+        model_class = SaleSOS
+        item_model_class = SaleItemSOS
+    elif currency == 'ETB':
+        model_class = SaleETB
+        item_model_class = SaleItemETB
+    elif currency == 'Legacy': # Fallback for old system if needed
+        model_class = Sale
+        item_model_class = SaleItem
+    else:
+        messages.error(request, "Invalid currency.")
+        return redirect('core:sales_list')
+
+    sale = get_object_or_404(model_class, id=sale_id)
     
     if request.method == 'POST':
         product_id = request.POST.get('product_id')
@@ -1008,18 +1008,18 @@ def add_sale_item(request, sale_id):
         
         try:
             product = get_object_or_404(Product, id=product_id)
-            quantity = int(quantity)
+            quantity = Decimal(quantity)
             
             if quantity <= 0:
                 messages.error(request, "Quantity must be greater than zero.")
-                return redirect('core:sale_detail', sale_id=sale.id)
+                return redirect('core:sale_detail', currency=currency, sale_id=sale.id)
             
             if product.current_stock < quantity:
                 messages.error(request, f"Not enough stock. Available: {product.current_stock}")
-                return redirect('core:sale_detail', sale_id=sale.id)
+                return redirect('core:sale_detail', currency=currency, sale_id=sale.id)
             
             # Check if this product is already in the sale
-            sale_item, created = SaleItem.objects.get_or_create(
+            sale_item, created = item_model_class.objects.get_or_create(
                 sale=sale,
                 product=product,
                 defaults={
@@ -1049,7 +1049,7 @@ def add_sale_item(request, sale_id):
                 quantity_change=-quantity,
                 old_quantity=product.current_stock + quantity,
                 new_quantity=product.current_stock,
-                staff_member=request.user,
+                user=request.user,
                 notes=f'Added to Sale #{sale.transaction_id}'
             )
             
@@ -1062,19 +1062,17 @@ def add_sale_item(request, sale_id):
             
             messages.success(request, f'Added {quantity} x {product.name} to sale successfully!')
             
-        except (ValueError, Product.DoesNotExist):
+        except (ValueError, Product.DoesNotExist, InvalidOperation):
             messages.error(request, "Invalid product or quantity.")
         
-        return redirect('core:sale_detail', sale_id=sale.id)
+        return redirect('core:sale_detail', currency=currency, sale_id=sale.id)
     
     # For GET requests, redirect back to sale detail
-    return redirect('core:sale_detail', sale_id=sale.id)
+    return redirect('core:sale_detail', currency=currency, sale_id=sale.id)
 
-@login_required
+@superuser_required
 def restock_inventory(request):
-    if not has_restock_permission(request.user):
-        messages.error(request, "Access denied. Inventory permission required.")
-        return redirect('core:sales_list')
+    # Permission check removed as all users are trusted
     
     if request.method == 'POST':
         product_id = request.POST.get('product_id')
@@ -1083,7 +1081,7 @@ def restock_inventory(request):
         
         try:
             product = Product.objects.get(id=product_id)
-            quantity = int(quantity)
+            quantity = Decimal(quantity)
             
             if quantity <= 0:
                 return JsonResponse({'success': False, 'error': 'Quantity must be positive'})
@@ -1099,7 +1097,7 @@ def restock_inventory(request):
                 quantity_change=quantity,
                 old_quantity=old_stock,
                 new_quantity=product.current_stock,
-                staff_member=request.user,
+                user=request.user,
                 notes=notes
             )
             
@@ -1126,7 +1124,7 @@ def restock_inventory(request):
     
     return render(request, 'core/restock_inventory.html', context)
 
-@login_required
+@superuser_required
 def customers_list(request):
     customers = Customer.objects.all().order_by('-date_created')
     
@@ -1166,7 +1164,7 @@ def customers_list(request):
     
     return render(request, 'core/customers_list.html', context)
 
-@login_required
+@superuser_required
 def create_customer(request):
     if request.method == 'POST':
         form = CustomerForm(request.POST)
@@ -1192,14 +1190,9 @@ def create_customer(request):
     return render(request, 'core/create_customer.html', context)
 
 
-@login_required
+@superuser_required
 def edit_customer(request, customer_id):
-    """Edit customer information - admin/staff only"""
-    # Check permissions - only superusers and staff can edit customers
-    if not (request.user.is_superuser or request.user.is_staff):
-        messages.error(request, "Access denied. Admin or staff privileges required.")
-        return redirect('core:customer_detail', customer_id=customer_id)
-    
+    """Edit customer information - all admins can edit"""
     customer = get_object_or_404(Customer, id=customer_id)
     
     if request.method == 'POST':
@@ -1260,7 +1253,7 @@ def offline_view(request):
     """
     return render(request, 'core/offline.html')
 
-@login_required
+@superuser_required
 def customer_detail(request, customer_id):
     try:
         print(f"Customer detail view called for customer_id: {customer_id}")
@@ -1274,10 +1267,10 @@ def customer_detail(request, customer_id):
             currency_settings = CurrencySettings.objects.create()
         
         # Get sales from all models
-        usd_sales = SaleUSD.objects.filter(customer=customer).select_related('staff_member')
-        sos_sales = SaleSOS.objects.filter(customer=customer).select_related('staff_member')
-        etb_sales = SaleETB.objects.filter(customer=customer).select_related('staff_member')
-        legacy_sales = Sale.objects.filter(customer=customer).select_related('staff_member')
+        usd_sales = SaleUSD.objects.filter(customer=customer).select_related('user')
+        sos_sales = SaleSOS.objects.filter(customer=customer).select_related('user')
+        etb_sales = SaleETB.objects.filter(customer=customer).select_related('user')
+        legacy_sales = Sale.objects.filter(customer=customer).select_related('user')
         
         # Combine sales
         all_sales_list = []
@@ -1444,7 +1437,7 @@ def customer_detail(request, customer_id):
         messages.error(request, f"Error loading customer details: {str(e)}")
         return redirect('core:customers_list')
 
-@login_required
+@superuser_required
 def record_debt_payment(request, customer_id):
     customer = get_object_or_404(Customer, id=customer_id)
     
@@ -1453,7 +1446,7 @@ def record_debt_payment(request, customer_id):
         if form.is_valid():
             payment = form.save(commit=False)
             payment.customer = customer
-            payment.staff_member = request.user
+            payment.user = request.user
             
             # Get currency and amount from form
             currency = form.cleaned_data.get('currency', 'USD')
@@ -1597,14 +1590,9 @@ def record_debt_payment(request, customer_id):
     
     return render(request, 'core/record_debt_payment.html', context)
 
-@login_required
+@superuser_required
 def correct_customer_debt(request, customer_id):
-    """View for manually correcting customer debt - admin/staff only"""
-    # Check permissions - only superusers and staff can correct debt
-    if not (request.user.is_superuser or request.user.is_staff):
-        messages.error(request, "Access denied. Admin or staff privileges required.")
-        return redirect('core:customer_detail', customer_id=customer_id)
-    
+    """View for manually correcting customer debt - all admins can correct"""
     customer = get_object_or_404(Customer, id=customer_id)
     
     if request.method == 'POST':
@@ -1625,7 +1613,7 @@ def correct_customer_debt(request, customer_id):
                 new_debt_amount=new_debt_amount,
                 adjustment_amount=adjustment_amount,
                 reason=reason,
-                staff_member=request.user,
+                user=request.user,
                 ip_address=request.META.get('REMOTE_ADDR')
             )
             
@@ -1672,185 +1660,10 @@ def correct_customer_debt(request, customer_id):
     
     return render(request, 'core/correct_customer_debt.html', context)
 
-@login_required
-def staff_management(request):
-    if not is_superuser(request.user):
-        messages.error(request, "Access denied. Superuser privileges required.")
-        return redirect('core:dashboard')
-    
-    staff_members = User.objects.filter(is_staff=True).order_by('username')
-    
-    if request.method == 'POST':
-        action = request.POST.get('action', 'add')
-        
-        if action == 'add':
-            # Handle adding new staff member
-            print(f"POST data: {request.POST}")
-            form = CustomUserCreationForm(request.POST)
-            print(f"Form is valid: {form.is_valid()}")
-            if not form.is_valid():
-                print(f"Form errors: {form.errors}")
-            
-            if form.is_valid():
-                try:
-                    user = form.save(commit=False)
-                    user.set_password(form.cleaned_data['password1'])
-                    user.is_staff = True  # Make sure new users are staff members
-                    user.is_active = True  # Make sure new users are active
-                    
-                    # Set permissions from form
-                    user.can_sell = form.cleaned_data.get('can_sell', False)
-                    user.can_restock = form.cleaned_data.get('can_restock', False)
-                    
-                    print(f"About to save user: {user.username}")
-                    print(f"Permissions before save: can_sell={user.can_sell}, can_restock={user.can_restock}")
-                    
-                    user.save()
-                    
-                    print(f"Staff member created successfully: {user.username}")
-                    print(f"Permissions after save: can_sell={user.can_sell}, can_restock={user.can_restock}")
-                    
-                    # Log audit action
-                    try:
-                        log_audit_action(
-                            request.user, 'STAFF_ADDED', 'User', user.id,
-                            f'Created staff member: {user.username} with permissions: sell={user.can_sell}, restock={user.can_restock}',
-                            request.META.get('REMOTE_ADDR')
-                        )
-                    except Exception as audit_error:
-                        print(f"Audit log error: {audit_error}")
-                    
-                    messages.success(request, f'Staff member "{user.username}" created successfully!')
-                    return redirect('core:staff_management')
-                    
-                except Exception as e:
-                    print(f"Error creating staff member: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    messages.error(request, f'Error creating staff member: {str(e)}')
-            else:
-                print(f"Form errors: {form.errors}")
-                for field, errors in form.errors.items():
-                    for error in errors:
-                        messages.error(request, f'{field}: {error}')
-        
-        elif action == 'edit':
-            # Handle editing staff member
-            try:
-                staff_id = request.POST.get('staff_id')
-                print(f"Editing staff ID: {staff_id}")
-                print(f"Edit POST data: {request.POST}")
-                
-                staff = get_object_or_404(User, id=staff_id, is_staff=True)
-                print(f"Found staff: {staff.username}")
-                
-                # Update basic information
-                staff.username = request.POST.get('username', staff.username)
-                staff.email = request.POST.get('email', staff.email)
-                staff.first_name = request.POST.get('first_name', staff.first_name)
-                staff.last_name = request.POST.get('last_name', staff.last_name)
-                staff.phone = request.POST.get('phone', staff.phone)
-                
-                # Update password if provided
-                new_password = request.POST.get('password')
-                if new_password:
-                    staff.set_password(new_password)
-                
-                # Update permissions
-                staff.can_sell = 'can_sell' in request.POST
-                staff.can_restock = 'can_restock' in request.POST
-                staff.is_active = 'is_active' in request.POST
-                
-                print(f"Updated permissions: can_sell={staff.can_sell}, can_restock={staff.can_restock}, is_active={staff.is_active}")
-                
-                staff.save()
-                
-                print(f"Staff member updated successfully: {staff.username}")
-                
-                # Log audit action
-                try:
-                    log_audit_action(
-                        request.user, 'STAFF_UPDATED', 'User', staff.id,
-                        f'Updated staff member: {staff.username} with permissions: sell={staff.can_sell}, restock={staff.can_restock}, active={staff.is_active}',
-                        request.META.get('REMOTE_ADDR')
-                    )
-                except Exception as audit_error:
-                    print(f"Audit log error: {audit_error}")
-                
-                messages.success(request, f'Staff member "{staff.username}" updated successfully!')
-                return redirect('core:staff_management')
-                
-            except Exception as e:
-                print(f"Error updating staff member: {e}")
-                import traceback
-                traceback.print_exc()
-                messages.error(request, f'Error updating staff member: {str(e)}')
-        
-        elif action == 'activate':
-            # Handle activating staff member
-            try:
-                staff_id = request.POST.get('staff_id')
-                staff = get_object_or_404(User, id=staff_id, is_staff=True)
-                staff.is_active = True
-                staff.save()
-                
-                # Log audit action
-                log_audit_action(
-                    request.user, 'STAFF_ACTIVATED', 'User', staff.id,
-                    f'Activated staff member: {staff.username}',
-                    request.META.get('REMOTE_ADDR')
-                )
-                
-                messages.success(request, f'Staff member "{staff.username}" activated successfully!')
-                return redirect('core:staff_management')
-                
-            except Exception as e:
-                print(f"Error activating staff member: {e}")
-                messages.error(request, f'Error activating staff member: {str(e)}')
-        
-        elif action == 'deactivate':
-            # Handle deactivating staff member
-            try:
-                staff_id = request.POST.get('staff_id')
-                staff = get_object_or_404(User, id=staff_id, is_staff=True)
-                
-                # Don't allow deactivating superusers
-                if staff.is_superuser:
-                    messages.error(request, "Cannot deactivate superuser accounts.")
-                    return redirect('core:staff_management')
-                
-                staff.is_active = False
-                staff.save()
-                
-                # Log audit action
-                log_audit_action(
-                    request.user, 'STAFF_DEACTIVATED', 'User', staff.id,
-                    f'Deactivated staff member: {staff.username}',
-                    request.META.get('REMOTE_ADDR')
-                )
-                
-                messages.success(request, f'Staff member "{staff.username}" deactivated successfully!')
-                return redirect('core:staff_management')
-                
-            except Exception as e:
-                print(f"Error deactivating staff member: {e}")
-                messages.error(request, f'Error deactivating staff member: {str(e)}')
-    
-    else:
-        form = CustomUserCreationForm()
-    
-    context = {
-        'staff_members': staff_members,
-        'form': form,
-    }
-    
-    return render(request, 'core/staff_management.html', context)
 
-@login_required
+
+@superuser_required
 def currency_settings(request):
-    if not is_superuser(request.user):
-        messages.error(request, "Access denied. Superuser privileges required.")
-        return redirect('core:dashboard')
     
     currency_settings = CurrencySettings.objects.first()
     
@@ -1891,7 +1704,8 @@ def api_search_products(request):
         products = Product.objects.filter(
             Q(name__icontains=query) |
             Q(brand__icontains=query) |
-            Q(category__name__icontains=query)
+            Q(category__name__icontains=query),
+            is_active=True
         )[:10]
     
     data = []
@@ -1902,34 +1716,13 @@ def api_search_products(request):
             'brand': product.brand,
             'category': product.category.name,
             'selling_price': float(product.selling_price),
-            'current_stock': product.current_stock,
-            'low_stock_threshold': product.low_stock_threshold,
+            'current_stock': float(product.current_stock),
+            'low_stock_threshold': float(product.low_stock_threshold),
+            'selling_unit': product.selling_unit,
+            'minimum_sale_length': float(product.minimum_sale_length) if product.minimum_sale_length else None,
         })
     
     return JsonResponse(data, safe=False)
-
-@login_required
-def api_lookup_product_by_barcode(request):
-    """Lookup a product by exact barcode string."""
-    barcode = request.GET.get('barcode', '').strip()
-    if not barcode:
-        return JsonResponse({'success': False, 'error': 'Missing barcode'}, status=400)
-    try:
-        product = Product.objects.get(barcode=barcode)
-        return JsonResponse({
-            'success': True,
-            'product': {
-                'id': product.id,
-                'name': product.name,
-                'brand': product.brand,
-                'category': product.category.name,
-                'selling_price': float(product.selling_price),
-                'current_stock': product.current_stock,
-                'low_stock_threshold': product.low_stock_threshold,
-            }
-        })
-    except Product.DoesNotExist:
-        return JsonResponse({'success': False, 'error': 'Product not found'}, status=404)
 
 @login_required
 def api_search_customers(request):
@@ -1998,20 +1791,18 @@ def api_create_customer(request):
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 
-@login_required
+@superuser_required
 def api_create_product(request):
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'Method not allowed'})
     
-    if not request.user.is_superuser:
-        return JsonResponse({'success': False, 'error': 'Permission denied'})
+    # All logged-in admins can create products
     
     try:
         # Get form data
         name = request.POST.get('name', '').strip()
         brand = request.POST.get('brand', '').strip()
         category_id = request.POST.get('category', '').strip()
-        barcode = request.POST.get('barcode', '').strip()
         purchase_price = request.POST.get('purchase_price', '').strip()
         selling_price = request.POST.get('selling_price', '').strip()
         current_stock = request.POST.get('current_stock', '0').strip()
@@ -2038,18 +1829,11 @@ def api_create_product(request):
             return JsonResponse({'success': False, 'error': 'Invalid category'})
         
         # Create product
-        # Validate optional barcode uniqueness if provided
-        if barcode:
-            if Product.objects.filter(barcode=barcode).exists():
-                return JsonResponse({'success': False, 'error': 'Barcode already exists for another product'}, status=400)
-
-        # Create product (barcode optional)
         try:
             product = Product.objects.create(
             name=name,
             brand=brand,
             category=category,
-            barcode=barcode or None,
             purchase_price=purchase_price,
             selling_price=selling_price,
             current_stock=current_stock,
@@ -2057,8 +1841,7 @@ def api_create_product(request):
             is_active=is_active
             )
         except IntegrityError:
-            # Catch rare race where another product with same barcode was created just now
-            return JsonResponse({'success': False, 'error': 'Barcode already exists for another product'}, status=400)
+            return JsonResponse({'success': False, 'error': 'Product creation failed'}, status=400)
         
         # Log audit action
         log_audit_action(
@@ -2074,7 +1857,7 @@ def api_create_product(request):
                 'name': product.name,
                 'brand': product.brand,
                 'category': product.category.name,
-                'barcode': product.barcode,
+               
                 'selling_price': float(product.selling_price),
                 'current_stock': product.current_stock,
                 'low_stock_threshold': product.low_stock_threshold,
@@ -2084,7 +1867,7 @@ def api_create_product(request):
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 
-@login_required
+@superuser_required
 def api_get_product_details(request, product_id):
     try:
         product = Product.objects.get(id=product_id)
@@ -2107,26 +1890,19 @@ def api_get_product_details(request, product_id):
     except Product.DoesNotExist:
         return JsonResponse({'error': 'Product not found'}, status=404)
 
-@login_required
+@superuser_required
 def debug_user(request):
-    """Debug view to check user permissions"""
+    """Debug view to check user info"""
     user_info = {
         'username': request.user.username,
         'full_name': request.user.get_full_name(),
         'is_superuser': request.user.is_superuser,
-        'is_staff': request.user.is_staff,
-        'can_sell': request.user.can_sell,
-        'can_restock': request.user.can_restock,
-        'is_active_staff': request.user.is_active_staff,
         'date_joined': request.user.date_joined.isoformat(),
     }
     return JsonResponse(user_info)
-@login_required
+@superuser_required
 def debug_inventory(request):
     """Debug view to check inventory status"""
-    if not request.user.is_superuser:
-        return JsonResponse({'error': 'Superuser access required'}, status=403)
-    
     products = Product.objects.all().order_by('name')
     data = []
     for product in products:
@@ -2146,9 +1922,6 @@ def debug_inventory(request):
 @login_required
 def debug_customer(request, customer_id):
     """Debug view to check customer status and debt"""
-    if not request.user.is_superuser:
-        return JsonResponse({'error': 'Superuser access required'}, status=403)
-    
     try:
         customer = Customer.objects.get(id=customer_id)
         sales = Sale.objects.filter(customer=customer)
@@ -2210,38 +1983,113 @@ def edit_sale(request, currency, sale_id):
     sale = get_object_or_404(model_class, id=sale_id)
 
     if request.method == 'POST':
-        new_customer_id = request.POST.get('customer')
-        new_staff_id = request.POST.get('staff_member')
+        new_customer_id = request.POST.get('customer', '').strip()
         new_amount_paid = request.POST.get('amount_paid')
 
         try:
-            # Handle Customer Update (and debt transfer)
-            if new_customer_id and int(new_customer_id) != sale.customer.id:
-                old_customer = sale.customer
-                new_customer = Customer.objects.get(id=new_customer_id)
-                
-                # Remove debt from old customer
-                old_customer.update_debt(-sale.debt_amount, currency)
-                
-                # Add debt to new customer
-                new_customer.update_debt(sale.debt_amount, currency)
-                
-                sale.customer = new_customer
+            # Store old values before any changes
+            old_debt = sale.debt_amount
+            old_customer = sale.customer
             
-            # Update Staff
-            if new_staff_id:
-                sale.staff_member = User.objects.get(id=new_staff_id)
-            
-            # Update Amount Paid & Recalculate Debt
+            # First, update amount paid to recalculate debt
             if new_amount_paid:
-                old_debt = sale.debt_amount
                 sale.amount_paid = Decimal(new_amount_paid)
-                sale.save() # save() method handles debt_amount recalculation logic
+                sale.save()  # save() method handles debt_amount recalculation logic
+            new_debt = sale.debt_amount
 
-                # Sync customer total debt if amount changed
-                if sale.debt_amount != old_debt:
-                    debt_diff = sale.debt_amount - old_debt
-                    sale.customer.update_debt(debt_diff, currency)
+            # Customer logic: Required ONLY if debt exists
+            if new_debt > Decimal('0.01'):  # Small threshold to avoid floating-point errors
+                # Debt exists - customer is required
+                if not new_customer_id:
+                    messages.error(request, "Customer is required when the sale has outstanding debt. Please select a customer or pay the full amount.")
+                    customers = Customer.objects.all().order_by('name')
+                    # Reload sale to get correct state (revert any changes)
+                    sale.refresh_from_db()
+                    # Recalculate values for context (same logic as GET request)
+                    currency_settings = CurrencySettings.objects.first()
+                    usd_to_etb_rate = currency_settings.usd_to_etb_rate if currency_settings else Decimal('100.00')
+                    usd_to_sos_rate = currency_settings.usd_to_sos_rate if currency_settings else Decimal('8000.00')
+                    
+                    if currency == 'ETB' and hasattr(sale, 'exchange_rate_at_sale') and sale.exchange_rate_at_sale:
+                        etb_exchange_rate = sale.exchange_rate_at_sale
+                    else:
+                        etb_exchange_rate = usd_to_etb_rate
+                    
+                    if hasattr(sale, 'items'):
+                        calculated_total = sale.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
+                        if calculated_total != sale.total_amount:
+                            sale.total_amount = calculated_total
+                            sale.save()
+                    
+                    sale.refresh_from_db()
+                    calculated_debt = max(Decimal('0.00'), sale.total_amount - sale.amount_paid)
+                    
+                    if currency == 'USD':
+                        total_amount_etb = sale.total_amount * usd_to_etb_rate
+                        amount_paid_etb = sale.amount_paid * usd_to_etb_rate
+                        debt_amount_etb = calculated_debt * usd_to_etb_rate
+                    elif currency == 'SOS':
+                        if usd_to_sos_rate > 0:
+                            total_amount_usd = sale.total_amount / usd_to_sos_rate
+                            amount_paid_usd = sale.amount_paid / usd_to_sos_rate
+                            debt_amount_usd = calculated_debt / usd_to_sos_rate
+                            total_amount_etb = total_amount_usd * usd_to_etb_rate
+                            amount_paid_etb = amount_paid_usd * usd_to_etb_rate
+                            debt_amount_etb = debt_amount_usd * usd_to_etb_rate
+                        else:
+                            total_amount_etb = Decimal('0.00')
+                            amount_paid_etb = Decimal('0.00')
+                            debt_amount_etb = Decimal('0.00')
+                    else:  # ETB
+                        total_amount_etb = sale.total_amount
+                        amount_paid_etb = sale.amount_paid
+                        debt_amount_etb = calculated_debt
+                    
+                    context = {
+                        'sale': sale,
+                        'currency': currency,
+                        'customers': customers,
+                        'total_amount_etb': total_amount_etb,
+                        'amount_paid_etb': amount_paid_etb,
+                        'debt_amount_etb': debt_amount_etb,
+                        'total_amount_original': sale.total_amount,
+                        'amount_paid_original': sale.amount_paid,
+                        'debt_amount_original': calculated_debt,
+                        'usd_to_etb_rate': usd_to_etb_rate,
+                        'usd_to_sos_rate': usd_to_sos_rate,
+                        'etb_exchange_rate': etb_exchange_rate,
+                    }
+                    return render(request, 'core/edit_sale.html', context)
+                
+                # Get the new customer
+                new_customer = Customer.objects.get(id=new_customer_id)
+                current_customer_id = old_customer.id if old_customer else None
+                
+                # Handle customer assignment/change (debt transfer)
+                if not current_customer_id or int(new_customer_id) != current_customer_id:
+                    # Case 1: Sale had no customer, now assigning one
+                    if not old_customer:
+                        # Add debt to new customer
+                        new_customer.update_debt(new_debt, currency)
+                        sale.customer = new_customer
+                    # Case 2: Sale had a customer, changing to different customer
+                    else:
+                        # Remove old debt from old customer
+                        old_customer.update_debt(-old_debt, currency)
+                        # Add new debt to new customer
+                        new_customer.update_debt(new_debt, currency)
+                        sale.customer = new_customer
+                else:
+                    # Same customer, but debt amount may have changed
+                    if old_customer and new_debt != old_debt:
+                        debt_diff = new_debt - old_debt
+                        old_customer.update_debt(debt_diff, currency)
+            else:
+                # Fully paid - clear customer and remove debt from customer if exists
+                if old_customer:
+                    # Remove all old debt from old customer
+                    old_customer.update_debt(-old_debt, currency)
+                    sale.customer = None
 
             sale.save()
             messages.success(request, "Sale updated successfully.")
@@ -2252,12 +2100,133 @@ def edit_sale(request, currency, sale_id):
             # Fallthrough to render form with errors
     
     customers = Customer.objects.all().order_by('name')
-    staff_members = User.objects.all().order_by('username')
+    
+    # Get currency settings for ETB conversion
+    currency_settings = CurrencySettings.objects.first()
+    usd_to_etb_rate = currency_settings.usd_to_etb_rate if currency_settings else Decimal('100.00')
+    usd_to_sos_rate = currency_settings.usd_to_sos_rate if currency_settings else Decimal('8000.00')
+    
+    # For ETB sales, use stored exchange rate if available
+    if currency == 'ETB' and hasattr(sale, 'exchange_rate_at_sale') and sale.exchange_rate_at_sale:
+        etb_exchange_rate = sale.exchange_rate_at_sale
+    else:
+        etb_exchange_rate = usd_to_etb_rate
+    
+    # Ensure total_amount is calculated from sale items (recalculate if needed)
+    # Calculate total from items directly to ensure accuracy
+    if hasattr(sale, 'items'):
+        calculated_total = sale.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
+        # Only update if different (avoid unnecessary save)
+        if calculated_total != sale.total_amount:
+            sale.total_amount = calculated_total
+            sale.save()
+    else:
+        # Fallback to calculate_total method
+        sale.calculate_total()
+    
+    sale.refresh_from_db()
+    
+    # Calculate debt_amount explicitly (total_amount - amount_paid)
+    calculated_debt = max(Decimal('0.00'), sale.total_amount - sale.amount_paid)
+    
+    # Convert all amounts to ETB for display
+    if currency == 'USD':
+        total_amount_etb = sale.total_amount * usd_to_etb_rate
+        amount_paid_etb = sale.amount_paid * usd_to_etb_rate
+        debt_amount_etb = calculated_debt * usd_to_etb_rate
+    elif currency == 'SOS':
+        if usd_to_sos_rate > 0:
+            # Convert SOS -> USD -> ETB
+            total_amount_usd = sale.total_amount / usd_to_sos_rate
+            amount_paid_usd = sale.amount_paid / usd_to_sos_rate
+            debt_amount_usd = calculated_debt / usd_to_sos_rate
+            total_amount_etb = total_amount_usd * usd_to_etb_rate
+            amount_paid_etb = amount_paid_usd * usd_to_etb_rate
+            debt_amount_etb = debt_amount_usd * usd_to_etb_rate
+        else:
+            total_amount_etb = Decimal('0.00')
+            amount_paid_etb = Decimal('0.00')
+            debt_amount_etb = Decimal('0.00')
+    else:  # ETB
+        total_amount_etb = sale.total_amount
+        amount_paid_etb = sale.amount_paid
+        debt_amount_etb = calculated_debt
 
     context = {
         'sale': sale,
         'currency': currency,
         'customers': customers,
-        'staff_members': staff_members,
+        # Real computed values in ETB
+        'total_amount_etb': total_amount_etb,
+        'amount_paid_etb': amount_paid_etb,
+        'debt_amount_etb': debt_amount_etb,
+        # Original currency values for form input
+        'total_amount_original': sale.total_amount,
+        'amount_paid_original': sale.amount_paid,
+        'debt_amount_original': calculated_debt,
+        # Exchange rates for JavaScript
+        'usd_to_etb_rate': usd_to_etb_rate,
+        'usd_to_sos_rate': usd_to_sos_rate,
+        'etb_exchange_rate': etb_exchange_rate,
     }
     return render(request, 'core/edit_sale.html', context)
+
+
+from django.views.decorators.http import require_POST
+from django.http import JsonResponse
+from decimal import Decimal
+
+@login_required
+@require_POST
+def api_create_product(request):
+    """API endpoint to create a new product"""
+    try:
+        from django.http import JsonResponse
+        from decimal import Decimal
+        from .models import Product, Category
+
+        name = request.POST.get('name')
+      
+        brand = request.POST.get('brand')
+        category_id = request.POST.get('category')
+        selling_price = request.POST.get('selling_price')
+        purchase_price = request.POST.get('purchase_price')
+        current_stock = request.POST.get('current_stock', '0')
+        low_stock_threshold = request.POST.get('low_stock_threshold', '5')
+        selling_unit = request.POST.get('selling_unit', 'UNIT')
+        minimum_sale_length = request.POST.get('minimum_sale_length', None)
+        is_active = request.POST.get('is_active') == 'on'
+        
+        # Validate required fields
+        if not all([name, brand, category_id, selling_price, purchase_price]):
+            return JsonResponse({'success': False, 'error': 'Missing required fields'}, status=400)
+        
+        # Get category
+        try:
+            category = Category.objects.get(id=category_id)
+        except Category.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Invalid category'}, status=400)
+        
+        # Create product
+        product = Product.objects.create(
+            name=name,
+          
+            brand=brand,
+            category=category,
+            selling_price=Decimal(selling_price),
+            purchase_price=Decimal(purchase_price),
+            current_stock=Decimal(current_stock),
+            low_stock_threshold=Decimal(low_stock_threshold),
+            selling_unit=selling_unit,
+            minimum_sale_length=Decimal(minimum_sale_length) if minimum_sale_length else None,
+            is_active=is_active
+        )
+        
+        return JsonResponse({
+            'success': True,
+            'product_id': product.id,
+            'message': f'Product "{product.name}" created successfully'
+        })
+        
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)

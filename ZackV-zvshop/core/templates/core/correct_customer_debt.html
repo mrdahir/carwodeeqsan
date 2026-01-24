@@ -213,7 +213,13 @@
                         <br>
                         <small class="text-muted">{{ correction.date_created|date:"M d, Y" }}</small>
                     </div>
-                    <small class="text-muted">{{ correction.staff_member.username }}</small>
+                    <small class="text-muted">
+                        {% if correction.user %}
+                            {{ correction.user.get_full_name|default:correction.user.username }}
+                        {% else %}
+                            Admin
+                        {% endif %}
+                    </small>
                 </div>
                 {% if not forloop.last %}
                 <hr>{% endif %}

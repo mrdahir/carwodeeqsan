@@ -18,12 +18,12 @@ def run_verification():
     # 1. Setup Data
     print("\n1. Setting up test data...")
     
-    # Create or get Staff
-    staff, created = User.objects.get_or_create(username='test_staff')
+    # Create or get Admin User
+    admin_user, created = User.objects.get_or_create(username='test_admin')
     if created:
-        staff.set_password('password')
-        staff.save()
-    print(f"Staff member: {staff.username}")
+        admin_user.set_password('password')
+        admin_user.save()
+    print(f"Admin user: {admin_user.username}")
 
     # Create or get Customer
     customer, created = Customer.objects.get_or_create(
@@ -79,7 +79,7 @@ def run_verification():
     # Create SaleETB
     sale = SaleETB.objects.create(
         customer=customer,
-        staff_member=staff,
+        user=admin_user,
         total_amount=total_etb,
         amount_paid=0,
         debt_amount=total_etb

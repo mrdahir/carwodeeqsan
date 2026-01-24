@@ -1,4 +1,4 @@
-const CACHE_NAME = 'carwo-deeqsan-v2';
+const CACHE_NAME = 'carwo-deeqsan-v3';
 const STATIC_ASSETS = [
     '/static/manifest.json',
     '/offline/',

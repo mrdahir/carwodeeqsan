@@ -7,17 +7,14 @@ import uuid
 
 
 class User(AbstractUser):
-    """Custom user model with role-based permissions"""
+    """Admin user model - all logged-in users are trusted admins"""
     phone = models.CharField(max_length=15, blank=True, null=True)
-    can_sell = models.BooleanField(default=False, verbose_name="Can Make Sales")
-    can_restock = models.BooleanField(default=False, verbose_name="Can Restock Inventory")
-    is_active_staff = models.BooleanField(default=True, verbose_name="Active Staff Member")
     date_created = models.DateTimeField(auto_now_add=True)
     date_updated = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = "Staff Member"
-        verbose_name_plural = "Staff Members"
+        verbose_name = "Admin User"
+        verbose_name_plural = "Admin Users"
 
     def __str__(self):
         return f"{self.get_full_name()} ({self.username})"
@@ -107,7 +104,6 @@ class Product(models.Model):
     name = models.CharField(max_length=200)
     brand = models.CharField(max_length=100)
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
-    barcode = models.CharField(max_length=64, unique=True, null=True, blank=True)
     purchase_price = models.DecimalField(
         max_digits=10, 
         decimal_places=2,
@@ -118,8 +114,21 @@ class Product(models.Model):
         decimal_places=2,
         verbose_name="Selling Price (USD)"
     )
-    current_stock = models.PositiveIntegerField(default=0)
-    low_stock_threshold = models.PositiveIntegerField(default=5)
+    UNIT_CHOICES = [
+        ('UNIT', 'Unit'),
+        ('METER', 'Meter'),
+    ]
+    selling_unit = models.CharField(max_length=10, choices=UNIT_CHOICES, default='UNIT')
+    
+    current_stock = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    low_stock_threshold = models.DecimalField(max_digits=10, decimal_places=2, default=5.00)
+    minimum_sale_length = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+        help_text="Applies only to METER products"
+    )
     date_added = models.DateTimeField(auto_now_add=True)
     date_updated = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
@@ -144,8 +153,8 @@ class Product(models.Model):
 
 class Customer(models.Model):
     """Customer model with separate USD and SOS debt tracking"""
-    name = models.CharField(max_length=200)
-    phone = models.CharField(max_length=15, unique=True)
+    name = models.CharField(max_length=200, blank=True, null=True)
+    phone = models.CharField(max_length=15, blank=True, null=True) # Unique constraint relaxed by migration
     total_debt_usd = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total debt in USD")
     total_debt_sos = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total debt in SOS")
     total_debt_etb = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total debt in ETB")
@@ -248,8 +257,8 @@ class Customer(models.Model):
 class SaleUSD(models.Model):
     """USD Sales transaction model - completely separate from SOS"""
     transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, help_text="Optional - allows anonymous sales")
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='usd_sales', help_text="Optional - admin user who created the sale")
     
     # All amounts stored in USD
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total amount in USD")
@@ -264,7 +273,8 @@ class SaleUSD(models.Model):
         verbose_name_plural = "USD Sales"
 
     def __str__(self):
-        return f"USD Sale {self.transaction_id} - {self.customer.name}"
+        customer_name = self.customer.name if self.customer else "Anonymous"
+        return f"USD Sale {self.transaction_id} - {customer_name}"
 
     def calculate_total(self):
         """Calculate and update the total amount for this sale"""
@@ -285,8 +295,9 @@ class SaleUSD(models.Model):
 class SaleSOS(models.Model):
     """SOS Sales transaction model - completely separate from USD"""
     transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, help_text="Optional - allows anonymous sales")
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='sos_sales', help_text="Optional - admin user who created the sale")
+
     
     # All amounts stored in SOS
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total amount in SOS")
@@ -301,7 +312,8 @@ class SaleSOS(models.Model):
         verbose_name_plural = "SOS Sales"
 
     def __str__(self):
-        return f"SOS Sale {self.transaction_id} - {self.customer.name}"
+        customer_name = self.customer.name if self.customer else "Anonymous"
+        return f"SOS Sale {self.transaction_id} - {customer_name}"
 
     def calculate_total(self):
         """Calculate and update the total amount for this sale"""
@@ -310,6 +322,20 @@ class SaleSOS(models.Model):
         # Debt will be recalculated in save() method
         self.save()
         return total
+    
+    def clean(self):
+        """Validate debt requirements"""
+        from django.core.exceptions import ValidationError
+        
+        # Calculate debt amount
+        if self.total_amount is not None and self.amount_paid is not None:
+            calculated_debt = max(Decimal('0.00'), self.total_amount - self.amount_paid)
+            
+            # If there's debt (partial payment), customer is required
+            if calculated_debt > 0 and not self.customer:
+                raise ValidationError({
+                    'customer': 'Credit sales require a customer. Please select a customer or pay the full amount.'
+                })
     
     def save(self, *args, **kwargs):
         """Override save to automatically recalculate debt_amount"""
@@ -322,8 +348,8 @@ class SaleSOS(models.Model):
 class SaleETB(models.Model):
     """ETB Sales transaction model - completely separate from USD/SOS"""
     transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, help_text="Optional - allows anonymous sales")
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='etb_sales', help_text="Optional - admin user who created the sale")
     
     # All amounts stored in ETB
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total amount in ETB")
@@ -335,6 +361,7 @@ class SaleETB(models.Model):
         max_digits=10, 
         decimal_places=2, 
         default=185.00,
+        validators=[MinValueValidator(Decimal('0.01'))],
         help_text="USD to ETB exchange rate at time of sale"
     )
     
@@ -346,7 +373,8 @@ class SaleETB(models.Model):
         verbose_name_plural = "ETB Sales"
 
     def __str__(self):
-        return f"ETB Sale {self.transaction_id} - {self.customer.name}"
+        customer_name = self.customer.name if self.customer else "Anonymous"
+        return f"ETB Sale {self.transaction_id} - {customer_name}"
 
     def calculate_total(self):
         """Calculate and update the total amount for this sale"""
@@ -355,6 +383,20 @@ class SaleETB(models.Model):
         # Debt will be recalculated in save() method
         self.save()
         return total
+    
+    def clean(self):
+        """Validate debt requirements"""
+        from django.core.exceptions import ValidationError
+        
+        # Calculate debt amount
+        if self.total_amount is not None and self.amount_paid is not None:
+            calculated_debt = max(Decimal('0.00'), self.total_amount - self.amount_paid)
+            
+            # If there's debt (partial payment), customer is required
+            if calculated_debt > 0 and not self.customer:
+                raise ValidationError({
+                    'customer': 'Credit sales require a customer. Please select a customer or pay the full amount.'
+                })
     
     def save(self, *args, **kwargs):
         """Override save to automatically recalculate debt_amount"""
@@ -374,8 +416,8 @@ class Sale(models.Model):
     ]
     
     transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
-    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, help_text="Optional - allows anonymous sales")
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='legacy_sales', help_text="Optional - admin user who created the sale")
     currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='USD')
     
     # Store amounts in original currency
@@ -544,7 +586,7 @@ class SaleItemUSD(models.Model):
     """Individual items in a USD sale"""
     sale = models.ForeignKey(SaleUSD, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, help_text="Quantity bought")
     unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Unit price in USD")
     total_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total price in USD")
 
@@ -615,10 +657,28 @@ class SaleItemUSD(models.Model):
         return float(self.get_profit_usd())
     
     def clean(self):
-        """Validate that unit_price is not below minimum selling price"""
+        """Validate unit_price and unit type constraints"""
         from django.core.exceptions import ValidationError
         
-        if self.product and self.unit_price and self.product.selling_price:
+        if not self.product:
+            return
+        
+        # Unit type validation
+        if self.product.selling_unit == 'UNIT' or self.product.selling_unit == 'PIECE':
+            # PIECE/UNIT products require whole numbers >= 1
+            if self.quantity % 1 != 0 or self.quantity < 1:
+                raise ValidationError({
+                    'quantity': f'Piece products require whole numbers ≥ 1. You entered {self.quantity}.'
+                })
+        elif self.product.selling_unit == 'METER':
+            # METER products must meet minimum sale length
+            if self.product.minimum_sale_length and self.quantity < self.product.minimum_sale_length:
+                raise ValidationError({
+                    'quantity': f'Minimum length: {self.product.minimum_sale_length}m. You entered {self.quantity}m.'
+                })
+        
+        # Price validation
+        if self.unit_price and self.product.selling_price:
             if self.unit_price < self.product.selling_price:
                 raise ValidationError({
                     'unit_price': f'Unit price (${self.unit_price}) cannot be below minimum selling price (${self.product.selling_price}). The minimum selling price acts as the floor price for this product.'
@@ -641,7 +701,7 @@ class SaleItemSOS(models.Model):
     """Individual items in a SOS sale"""
     sale = models.ForeignKey(SaleSOS, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, help_text="Quantity bought")
     unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Unit price in SOS")
     total_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total price in SOS")
 
@@ -755,7 +815,7 @@ class SaleItemETB(models.Model):
     """Individual items in a ETB sale"""
     sale = models.ForeignKey(SaleETB, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, help_text="Quantity bought")
     unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Unit price in ETB")
     total_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Total price in ETB")
 
@@ -841,14 +901,30 @@ class SaleItemETB(models.Model):
         return float(self.get_profit_usd())
     
     def clean(self):
-        """Validate that unit_price is not below minimum selling price (converted to ETB)"""
+        """Validate unit_price and unit type constraints"""
         from django.core.exceptions import ValidationError
         
-        if self.product and self.unit_price and self.product.selling_price:
-            # Get currency settings to convert minimum selling price to ETB for comparison
+        if not self.product:
+            return
+        
+        # Unit type validation
+        if self.product.selling_unit == 'UNIT' or self.product.selling_unit == 'PIECE':
+            # PIECE/UNIT products require whole numbers >= 1
+            if self.quantity % 1 != 0 or self.quantity < 1:
+                raise ValidationError({
+                    'quantity': f'Piece products require whole numbers ≥ 1. You entered {self.quantity}.'
+                })
+        elif self.product.selling_unit == 'METER':
+            # METER products must meet minimum sale length
+            if self.product.minimum_sale_length and self.quantity < self.product.minimum_sale_length:
+                raise ValidationError({
+                    'quantity': f'Minimum length: {self.product.minimum_sale_length}m. You entered {self.quantity}m.'
+                })
+        
+        # Price validation - ETB currency
+        if self.unit_price and self.product.selling_price:
             currency_settings = CurrencySettings.objects.first()
             if not currency_settings or currency_settings.usd_to_etb_rate <= 0:
-                # If no currency settings, skip validation
                 return
             
             # Convert minimum selling price from USD to ETB for comparison
@@ -972,32 +1048,39 @@ class SaleItem(models.Model):
         return float(self.get_profit_usd())
     
     def clean(self):
-        """Validate that unit_price is not below minimum selling price"""
+        """Validate unit_price and unit type constraints"""
         from django.core.exceptions import ValidationError
         
-        if self.product and self.unit_price and self.product.selling_price:
-            sale_currency = self.sale.currency
+        if not self.product:
+            return
+        
+        # Unit type validation
+        if self.product.selling_unit == 'UNIT' or self.product.selling_unit == 'PIECE':
+            # PIECE/UNIT products require whole numbers >= 1
+            if self.quantity % 1 != 0 or self.quantity < 1:
+                raise ValidationError({
+                    'quantity': f'Piece products require whole numbers ≥ 1. You entered {self.quantity}.'
+                })
+        elif self.product.selling_unit == 'METER':
+            # METER products must meet minimum sale length
+            if self.product.minimum_sale_length and self.quantity < self.product.minimum_sale_length:
+                raise ValidationError({
+                    'quantity': f'Minimum length: {self.product.minimum_sale_length}m. You entered {self.quantity}m.'
+                })
+        
+        # Price validation - SOS currency
+        if self.unit_price and self.product.selling_price:
+            currency_settings = CurrencySettings.objects.first()
+            if not currency_settings or currency_settings.usd_to_sos_rate <= 0:
+                return
             
-            if sale_currency == 'USD':
-                # For USD sales, compare directly with minimum selling price
-                if self.unit_price < self.product.selling_price:
-                    raise ValidationError({
-                        'unit_price': f'Unit price (${self.unit_price}) cannot be below minimum selling price (${self.product.selling_price}). The minimum selling price acts as the floor price for this product.'
-                    })
-            else:  # SOS currency
-                # For SOS sales, convert minimum selling price to SOS for comparison
-                currency_settings = CurrencySettings.objects.first()
-                if not currency_settings or currency_settings.usd_to_sos_rate <= 0:
-                    # If no currency settings, skip validation
-                    return
-                
-                # Convert minimum selling price from USD to SOS for comparison
-                minimum_price_sos = self.product.selling_price * currency_settings.usd_to_sos_rate
-                
-                if self.unit_price < minimum_price_sos:
-                    raise ValidationError({
-                        'unit_price': f'Unit price ({self.unit_price} SOS) cannot be below minimum selling price ({minimum_price_sos:.2f} SOS). The minimum selling price acts as the floor price for this product.'
-                    })
+            # Convert minimum selling price from USD to SOS for comparison
+            minimum_price_sos = self.product.selling_price * currency_settings.usd_to_sos_rate
+            
+            if self.unit_price < minimum_price_sos:
+                raise ValidationError({
+                    'unit_price': f'Unit price ({self.unit_price} SOS) cannot be below minimum selling price ({minimum_price_sos:.2f} SOS). The minimum selling price acts as the floor price for this product.'
+                })
         
     def save(self, *args, **kwargs):
         # Calculate total price before saving
@@ -1021,10 +1104,10 @@ class InventoryLog(models.Model):
     
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     action = models.CharField(max_length=20, choices=ACTION_CHOICES)
-    quantity_change = models.IntegerField()  # Positive for restock, negative for sale
-    old_quantity = models.PositiveIntegerField()
-    new_quantity = models.PositiveIntegerField()
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    quantity_change = models.DecimalField(max_digits=10, decimal_places=2)  # Positive for restock, negative for sale
+    old_quantity = models.DecimalField(max_digits=10, decimal_places=2)
+    new_quantity = models.DecimalField(max_digits=10, decimal_places=2)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='inventory_logs')
     notes = models.TextField(blank=True)
     date_created = models.DateTimeField(auto_now_add=True)
     related_sale = models.ForeignKey(Sale, on_delete=models.SET_NULL, null=True, blank=True)
@@ -1044,7 +1127,7 @@ class DebtPaymentUSD(models.Model):
     """USD debt payments - completely separate from SOS"""
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in USD")
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='usd_debt_payments')
     date_created = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
 
@@ -1060,7 +1143,7 @@ class DebtPaymentSOS(models.Model):
     """SOS debt payments - completely separate from USD"""
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in SOS")
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='sos_debt_payments')
     date_created = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
 
@@ -1076,7 +1159,7 @@ class DebtPaymentETB(models.Model):
     """ETB debt payments - completely separate from USD/SOS"""
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in ETB")
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='etb_debt_payments')
     date_created = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
 
@@ -1101,7 +1184,7 @@ class DebtPayment(models.Model):
     amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Payment amount in USD")
     original_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='SOS', help_text="Original payment currency")
     original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Original payment amount in original currency")
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='legacy_debt_payments')
     date_created = models.DateTimeField(auto_now_add=True)
     notes = models.TextField(blank=True)
 
@@ -1168,7 +1251,7 @@ class DebtCorrection(models.Model):
     new_debt_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="New debt amount")
     adjustment_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Amount of adjustment (positive or negative)")
     reason = models.TextField(help_text="Reason for the debt correction")
-    staff_member = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='debt_corrections')
     date_created = models.DateTimeField(auto_now_add=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
 
@@ -1196,15 +1279,11 @@ class AuditLog(models.Model):
         ('DEBT_ADDED', 'Debt Added'),
         ('DEBT_CORRECTED', 'Debt Corrected'),
         ('DEBT_MANUALLY_ADJUSTED', 'Debt Manually Adjusted'),
-        ('STAFF_ADDED', 'Staff Added'),
-        ('STAFF_UPDATED', 'Staff Updated'),
-        ('STAFF_DEACTIVATED', 'Staff Deactivated'),
         ('CUSTOMER_ADDED', 'Customer Added'),
         ('CURRENCY_UPDATED', 'Currency Rate Updated'),
-        ('create_staff', 'Staff Created'),
     ]
     
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, help_text="Admin user who performed the action (null for anonymous/system actions)")
     action = models.CharField(max_length=50, choices=ACTION_CHOICES)
     object_type = models.CharField(max_length=50)
     object_id = models.CharField(max_length=50)

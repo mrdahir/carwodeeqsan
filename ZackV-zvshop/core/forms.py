@@ -6,14 +6,12 @@ from .models import User, Product, Customer, Sale, SaleItem, SaleItemUSD, SaleIt
 
 
 class CustomUserCreationForm(UserCreationForm):
-    """Custom user creation form with role permissions"""
+    """Admin user creation form"""
     phone = forms.CharField(max_length=15, required=False, help_text="Optional phone number")
-    can_sell = forms.BooleanField(required=False, label="Can Make Sales")
-    can_restock = forms.BooleanField(required=False, label="Can Restock Inventory")
     
     class Meta:
         model = User
-        fields = ('username', 'first_name', 'last_name', 'email', 'phone', 'password1', 'password2', 'can_sell', 'can_restock')
+        fields = ('username', 'first_name', 'last_name', 'email', 'phone', 'password1', 'password2')
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

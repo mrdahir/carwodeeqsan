@@ -221,7 +221,13 @@
                         <br>
                         <small class="text-muted">{{ payment.date_created|date:"M d, Y" }}</small>
                     </div>
-                    <small class="text-muted">{{ payment.staff_member.username }}</small>
+                    <small class="text-muted">
+                        {% if payment.user %}
+                            {{ payment.user.get_full_name|default:payment.user.username }}
+                        {% else %}
+                            Admin
+                        {% endif %}
+                    </small>
                 </div>
                 {% if not forloop.last %}
                 <hr>{% endif %}

@@ -6,15 +6,15 @@ from django.utils.safestring import mark_safe
 from .models import (
     User, CurrencySettings, Category, Product, Customer, 
     Sale, SaleItem, InventoryLog, DebtPayment, Receipt, AuditLog,
-    SaleUSD, SaleSOS, SaleItemUSD, SaleItemSOS, DebtPaymentUSD, DebtPaymentSOS,
-    DebtCorrection
+    SaleUSD, SaleSOS, SaleETB, SaleItemUSD, SaleItemSOS, SaleItemETB,
+    DebtPaymentUSD, DebtPaymentSOS, DebtPaymentETB, DebtCorrection
 )
 
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    list_display = ('username', 'get_full_name', 'phone', 'can_sell', 'can_restock', 'is_active_staff', 'date_created')
-    list_filter = ('can_sell', 'can_restock', 'is_active_staff', 'is_staff', 'is_superuser', 'date_created')
+    list_display = ('username', 'get_full_name', 'phone', 'is_active', 'date_created')
+    list_filter = ('is_superuser', 'is_active', 'date_created')
     search_fields = ('username', 'first_name', 'last_name', 'email', 'phone')
     ordering = ('-date_created',)
     
@@ -22,10 +22,7 @@ class CustomUserAdmin(UserAdmin):
         (None, {'fields': ('username', 'password')}),
         ('Personal info', {'fields': ('first_name', 'last_name', 'email', 'phone')}),
         ('Permissions', {
-            'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions'),
-        }),
-        ('Role Permissions', {
-            'fields': ('can_sell', 'can_restock', 'is_active_staff'),
+            'fields': ('is_active', 'is_superuser', 'groups', 'user_permissions'),
         }),
         ('Important dates', {'fields': ('last_login', 'date_joined')}),
     )
@@ -34,9 +31,6 @@ class CustomUserAdmin(UserAdmin):
         (None, {
             'classes': ('wide',),
             'fields': ('username', 'password1', 'password2', 'first_name', 'last_name', 'email', 'phone'),
-        }),
-        ('Role Permissions', {
-            'fields': ('can_sell', 'can_restock', 'is_active_staff'),
         }),
     )
 
@@ -74,15 +68,15 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'brand', 'category', 'barcode', 'selling_price', 'current_stock', 'low_stock_threshold', 'is_low_stock', 'profit_margin', 'is_active')
+    list_display = ('name', 'brand', 'category', 'selling_price', 'current_stock', 'low_stock_threshold', 'is_low_stock', 'profit_margin', 'is_active')
     list_filter = ('category', 'brand', 'is_active')
-    search_fields = ('name', 'brand', 'category__name', 'barcode')
+    search_fields = ('name', 'brand', 'category__name')
     ordering = ('name',)
     readonly_fields = ('date_added', 'date_updated', 'profit_margin', 'is_low_stock')
     
     fieldsets = (
         ('Basic Information', {
-            'fields': ('name', 'brand', 'category', 'barcode', 'is_active')
+            'fields': ('name', 'brand', 'category', 'is_active')
         }),
         ('Pricing (Superuser Only)', {
             'fields': ('purchase_price', 'selling_price'),
@@ -109,11 +103,11 @@ class DebtCorrectionInline(admin.TabularInline):
     """Inline admin for debt corrections"""
     model = DebtCorrection
     extra = 0
-    readonly_fields = ('date_created', 'staff_member', 'adjustment_amount')
-    fields = ('currency', 'old_debt_amount', 'new_debt_amount', 'adjustment_amount', 'reason', 'staff_member', 'date_created')
+    readonly_fields = ('date_created', 'adjustment_amount')
+    fields = ('currency', 'old_debt_amount', 'new_debt_amount', 'adjustment_amount', 'reason', 'date_created')
     
     def has_add_permission(self, request, obj=None):
-        return request.user.is_superuser or request.user.is_staff
+        return request.user.is_superuser
     
     def has_change_permission(self, request, obj=None):
         return False  # Make corrections read-only in admin
@@ -154,8 +148,8 @@ class CustomerAdmin(admin.ModelAdmin):
         return qs.select_related()
     
     def has_change_permission(self, request, obj=None):
-        """Only allow superusers and staff to edit customer debt"""
-        return request.user.is_superuser or request.user.is_staff
+        """Only allow superusers to edit customer debt"""
+        return request.user.is_superuser
 
 
 class SaleItemInline(admin.TabularInline):
@@ -176,16 +170,16 @@ class SaleItemInline(admin.TabularInline):
 
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
-    list_display = ('transaction_id', 'customer', 'staff_member', 'currency', 'total_amount', 'total_in_sos', 'debt_amount', 'date_created')
+    list_display = ('transaction_id', 'customer', 'currency', 'total_amount', 'total_in_sos', 'debt_amount', 'date_created')
     list_filter = ('currency', 'date_created', 'is_completed')
-    search_fields = ('transaction_id', 'customer__name', 'customer__phone', 'staff_member__username')
+    search_fields = ('transaction_id', 'customer__name', 'customer__phone')
     ordering = ('-date_created',)
     readonly_fields = ('transaction_id', 'debt_amount', 'date_created', 'total_in_sos', 'paid_in_sos', 'debt_in_sos')
     inlines = [SaleItemInline]
     
     fieldsets = (
         ('Transaction Info', {
-            'fields': ('transaction_id', 'customer', 'staff_member', 'currency', 'exchange_rate')
+            'fields': ('transaction_id', 'customer', 'currency', 'exchange_rate')
         }),
         ('Amounts (Original Currency)', {
             'fields': ('total_amount', 'amount_paid', 'debt_amount'),
@@ -221,7 +215,7 @@ class SaleAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('customer', 'staff_member')
+        return qs.select_related('customer', 'user')
 
 
 @admin.register(SaleItem)
@@ -237,73 +231,248 @@ class SaleItemAdmin(admin.ModelAdmin):
         return qs.select_related('sale', 'product')
 
 
+class SaleItemUSDInline(admin.TabularInline):
+    model = SaleItemUSD
+    extra = 0
+    readonly_fields = ('total_price',)
+    fields = ('product', 'quantity', 'unit_price', 'total_price')
+
+
+class SaleItemSOSInline(admin.TabularInline):
+    model = SaleItemSOS
+    extra = 0
+    readonly_fields = ('total_price',)
+    fields = ('product', 'quantity', 'unit_price', 'total_price')
+
+
+class SaleItemETBInline(admin.TabularInline):
+    model = SaleItemETB
+    extra = 0
+    readonly_fields = ('total_price',)
+    fields = ('product', 'quantity', 'unit_price', 'total_price')
+
+
 @admin.register(SaleUSD)
 class SaleUSDAdmin(admin.ModelAdmin):
-    list_display = ('transaction_id', 'customer', 'total_amount', 'amount_paid', 'debt_amount', 'date_created', 'is_completed')
+    list_display = ('transaction_id', 'customer', 'total_amount', 'amount_paid', 'debt_amount', 'total_amount_etb', 'date_created', 'is_completed')
     list_filter = ('is_completed', 'date_created')
     search_fields = ('customer__name', 'customer__phone', 'transaction_id')
     ordering = ('-date_created',)
-    readonly_fields = ('transaction_id', 'date_created')
+    readonly_fields = ('transaction_id', 'date_created', 'total_amount_etb', 'amount_paid_etb', 'debt_amount_etb')
+    inlines = [SaleItemUSDInline]
     fieldsets = (
         ('Transaction Details', {
-            'fields': ('transaction_id', 'customer', 'staff_member')
+            'fields': ('transaction_id', 'customer', 'user')
         }),
         ('USD Amounts', {
             'fields': ('total_amount', 'amount_paid', 'debt_amount'),
             'description': 'All amounts in USD'
         }),
+        ('ETB Equivalents', {
+            'fields': ('total_amount_etb', 'amount_paid_etb', 'debt_amount_etb'),
+            'description': 'Converted to ETB using current exchange rate',
+            'classes': ('collapse',)
+        }),
         ('System Info', {
             'fields': ('date_created', 'is_completed'),
             'classes': ('collapse',)
         }),
     )
+    
+    def total_amount_etb(self, obj):
+        """Display total amount in ETB"""
+        from .models import CurrencySettings
+        settings = CurrencySettings.objects.first()
+        if settings:
+            etb_amount = obj.total_amount * settings.usd_to_etb_rate
+            return f"{etb_amount:,.2f} ETB"
+        return "N/A"
+    total_amount_etb.short_description = 'Total (ETB)'
+    
+    def amount_paid_etb(self, obj):
+        """Display amount paid in ETB"""
+        from .models import CurrencySettings
+        settings = CurrencySettings.objects.first()
+        if settings:
+            etb_amount = obj.amount_paid * settings.usd_to_etb_rate
+            return f"{etb_amount:,.2f} ETB"
+        return "N/A"
+    amount_paid_etb.short_description = 'Paid (ETB)'
+    
+    def debt_amount_etb(self, obj):
+        """Display debt amount in ETB"""
+        from .models import CurrencySettings
+        settings = CurrencySettings.objects.first()
+        if settings:
+            etb_amount = obj.debt_amount * settings.usd_to_etb_rate
+            return f"{etb_amount:,.2f} ETB"
+        return "N/A"
+    debt_amount_etb.short_description = 'Debt (ETB)'
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('customer', 'user').prefetch_related('items')
 
 
 @admin.register(SaleSOS)
 class SaleSOSAdmin(admin.ModelAdmin):
-    list_display = ('transaction_id', 'customer', 'total_amount', 'amount_paid', 'debt_amount', 'date_created', 'is_completed')
+    list_display = ('transaction_id', 'customer', 'total_amount', 'amount_paid', 'debt_amount', 'total_amount_etb', 'date_created', 'is_completed')
     list_filter = ('is_completed', 'date_created')
     search_fields = ('customer__name', 'customer__phone', 'transaction_id')
     ordering = ('-date_created',)
-    readonly_fields = ('transaction_id', 'date_created')
+    readonly_fields = ('transaction_id', 'date_created', 'total_amount_etb', 'amount_paid_etb', 'debt_amount_etb')
+    inlines = [SaleItemSOSInline]
     fieldsets = (
         ('Transaction Details', {
-            'fields': ('transaction_id', 'customer', 'staff_member')
+            'fields': ('transaction_id', 'customer', 'user')
         }),
         ('SOS Amounts', {
             'fields': ('total_amount', 'amount_paid', 'debt_amount'),
             'description': 'All amounts in SOS'
         }),
+        ('ETB Equivalents', {
+            'fields': ('total_amount_etb', 'amount_paid_etb', 'debt_amount_etb'),
+            'description': 'Converted to ETB using current exchange rate',
+            'classes': ('collapse',)
+        }),
         ('System Info', {
             'fields': ('date_created', 'is_completed'),
             'classes': ('collapse',)
         }),
     )
+    
+    def total_amount_etb(self, obj):
+        """Display total amount in ETB"""
+        from .models import CurrencySettings
+        settings = CurrencySettings.objects.first()
+        if settings and settings.usd_to_sos_rate > 0:
+            usd_amount = obj.total_amount / settings.usd_to_sos_rate
+            etb_amount = usd_amount * settings.usd_to_etb_rate
+            return f"{etb_amount:,.2f} ETB"
+        return "N/A"
+    total_amount_etb.short_description = 'Total (ETB)'
+    
+    def amount_paid_etb(self, obj):
+        """Display amount paid in ETB"""
+        from .models import CurrencySettings
+        settings = CurrencySettings.objects.first()
+        if settings and settings.usd_to_sos_rate > 0:
+            usd_amount = obj.amount_paid / settings.usd_to_sos_rate
+            etb_amount = usd_amount * settings.usd_to_etb_rate
+            return f"{etb_amount:,.2f} ETB"
+        return "N/A"
+    amount_paid_etb.short_description = 'Paid (ETB)'
+    
+    def debt_amount_etb(self, obj):
+        """Display debt amount in ETB"""
+        from .models import CurrencySettings
+        settings = CurrencySettings.objects.first()
+        if settings and settings.usd_to_sos_rate > 0:
+            usd_amount = obj.debt_amount / settings.usd_to_sos_rate
+            etb_amount = usd_amount * settings.usd_to_etb_rate
+            return f"{etb_amount:,.2f} ETB"
+        return "N/A"
+    debt_amount_etb.short_description = 'Debt (ETB)'
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('customer', 'user').prefetch_related('items')
+
+
+@admin.register(SaleETB)
+class SaleETBAdmin(admin.ModelAdmin):
+    list_display = ('transaction_id', 'customer', 'total_amount', 'amount_paid', 'debt_amount', 'date_created', 'is_completed')
+    list_filter = ('is_completed', 'date_created')
+    search_fields = ('customer__name', 'customer__phone', 'transaction_id')
+    ordering = ('-date_created',)
+    readonly_fields = ('transaction_id', 'date_created', 'exchange_rate_at_sale')
+    inlines = [SaleItemETBInline]
+    fieldsets = (
+        ('Transaction Details', {
+            'fields': ('transaction_id', 'customer', 'user')
+        }),
+        ('ETB Amounts', {
+            'fields': ('total_amount', 'amount_paid', 'debt_amount'),
+            'description': 'All amounts in ETB'
+        }),
+        ('Exchange Rate', {
+            'fields': ('exchange_rate_at_sale',),
+            'description': 'USD to ETB rate at time of sale (for profit calculation)',
+            'classes': ('collapse',)
+        }),
+        ('System Info', {
+            'fields': ('date_created', 'is_completed'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('customer', 'user').prefetch_related('items')
+
+
+@admin.register(SaleItemUSD)
+class SaleItemUSDAdmin(admin.ModelAdmin):
+    list_display = ('sale', 'product', 'quantity', 'unit_price', 'total_price')
+    list_filter = ('sale__date_created',)
+    search_fields = ('sale__transaction_id', 'product__name', 'product__brand')
+    ordering = ('-sale__date_created',)
+    readonly_fields = ('total_price',)
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('sale', 'product')
+
+
+@admin.register(SaleItemSOS)
+class SaleItemSOSAdmin(admin.ModelAdmin):
+    list_display = ('sale', 'product', 'quantity', 'unit_price', 'total_price')
+    list_filter = ('sale__date_created',)
+    search_fields = ('sale__transaction_id', 'product__name', 'product__brand')
+    ordering = ('-sale__date_created',)
+    readonly_fields = ('total_price',)
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('sale', 'product')
+
+
+@admin.register(SaleItemETB)
+class SaleItemETBAdmin(admin.ModelAdmin):
+    list_display = ('sale', 'product', 'quantity', 'unit_price', 'total_price')
+    list_filter = ('sale__date_created',)
+    search_fields = ('sale__transaction_id', 'product__name', 'product__brand')
+    ordering = ('-sale__date_created',)
+    readonly_fields = ('total_price',)
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('sale', 'product')
 
 
 @admin.register(InventoryLog)
 class InventoryLogAdmin(admin.ModelAdmin):
-    list_display = ('product', 'action', 'quantity_change', 'old_quantity', 'new_quantity', 'staff_member', 'date_created')
+    list_display = ('product', 'action', 'quantity_change', 'old_quantity', 'new_quantity', 'date_created')
     list_filter = ('action', 'date_created', 'product__category')
-    search_fields = ('product__name', 'product__brand', 'staff_member__username', 'notes')
+    search_fields = ('product__name', 'product__brand', 'notes')
     ordering = ('-date_created',)
     readonly_fields = ('date_created',)
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('product', 'staff_member', 'related_sale')
+        return qs.select_related('product', 'related_sale')
 
 
 @admin.register(DebtPaymentUSD)
 class DebtPaymentUSDAdmin(admin.ModelAdmin):
-    list_display = ('customer', 'amount', 'staff_member', 'date_created')
-    list_filter = ('date_created', 'staff_member')
-    search_fields = ('customer__name', 'customer__phone', 'staff_member__username', 'notes')
+    list_display = ('customer', 'amount', 'date_created')
+    list_filter = ('date_created',)
+    search_fields = ('customer__name', 'customer__phone', 'notes')
     ordering = ('-date_created',)
     readonly_fields = ('date_created',)
     fieldsets = (
         ('Payment Information', {
-            'fields': ('customer', 'amount', 'staff_member', 'notes')
+            'fields': ('customer', 'amount', 'notes')
         }),
         ('System Info', {
             'fields': ('date_created',),
@@ -313,19 +482,19 @@ class DebtPaymentUSDAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('customer', 'staff_member')
+        return qs.select_related('customer')
 
 
 @admin.register(DebtPaymentSOS)
 class DebtPaymentSOSAdmin(admin.ModelAdmin):
-    list_display = ('customer', 'amount', 'staff_member', 'date_created')
-    list_filter = ('date_created', 'staff_member')
-    search_fields = ('customer__name', 'customer__phone', 'staff_member__username', 'notes')
+    list_display = ('customer', 'amount', 'date_created')
+    list_filter = ('date_created',)
+    search_fields = ('customer__name', 'customer__phone', 'notes')
     ordering = ('-date_created',)
     readonly_fields = ('date_created',)
     fieldsets = (
         ('Payment Information', {
-            'fields': ('customer', 'amount', 'staff_member', 'notes')
+            'fields': ('customer', 'amount', 'notes')
         }),
         ('System Info', {
             'fields': ('date_created',),
@@ -335,20 +504,42 @@ class DebtPaymentSOSAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('customer', 'staff_member')
+        return qs.select_related('customer')
+
+
+@admin.register(DebtPaymentETB)
+class DebtPaymentETBAdmin(admin.ModelAdmin):
+    list_display = ('customer', 'amount', 'date_created')
+    list_filter = ('date_created',)
+    search_fields = ('customer__name', 'customer__phone', 'notes')
+    ordering = ('-date_created',)
+    readonly_fields = ('date_created',)
+    fieldsets = (
+        ('Payment Information', {
+            'fields': ('customer', 'amount', 'notes')
+        }),
+        ('System Info', {
+            'fields': ('date_created',),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.select_related('customer')
 
 
 # Legacy DebtPayment admin for backward compatibility
 @admin.register(DebtPayment)
 class DebtPaymentAdmin(admin.ModelAdmin):
-    list_display = ('customer', 'amount', 'original_currency', 'original_amount', 'amount_in_sos', 'staff_member', 'date_created')
-    list_filter = ('original_currency', 'date_created', 'staff_member')
-    search_fields = ('customer__name', 'customer__phone', 'staff_member__username', 'notes')
+    list_display = ('customer', 'amount', 'original_currency', 'original_amount', 'amount_in_sos', 'date_created')
+    list_filter = ('original_currency', 'date_created')
+    search_fields = ('customer__name', 'customer__phone', 'notes')
     ordering = ('-date_created',)
     readonly_fields = ('date_created', 'amount_in_sos')
     fieldsets = (
         ('Payment Information', {
-            'fields': ('customer', 'amount', 'original_currency', 'original_amount', 'staff_member', 'notes')
+            'fields': ('customer', 'amount', 'original_currency', 'original_amount', 'notes')
         }),
         ('Converted Amounts', {
             'fields': ('amount_in_sos',),
@@ -367,7 +558,7 @@ class DebtPaymentAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('customer', 'staff_member')
+        return qs.select_related('customer')
 
 
 @admin.register(Receipt)
@@ -407,17 +598,17 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(DebtCorrection)
 class DebtCorrectionAdmin(admin.ModelAdmin):
-    list_display = ('customer', 'currency', 'old_debt_amount', 'new_debt_amount', 'adjustment_amount', 'staff_member', 'date_created')
-    list_filter = ('currency', 'date_created', 'staff_member')
-    search_fields = ('customer__name', 'customer__phone', 'reason', 'staff_member__username')
+    list_display = ('customer', 'currency', 'old_debt_amount', 'new_debt_amount', 'adjustment_amount', 'date_created')
+    list_filter = ('currency', 'date_created')
+    search_fields = ('customer__name', 'customer__phone', 'reason')
     ordering = ('-date_created',)
     readonly_fields = ('date_created', 'ip_address', 'adjustment_amount')
     fieldsets = (
         ('Correction Details', {
             'fields': ('customer', 'currency', 'old_debt_amount', 'new_debt_amount', 'adjustment_amount')
         }),
-        ('Reason & Staff', {
-            'fields': ('reason', 'staff_member')
+        ('Reason', {
+            'fields': ('reason',)
         }),
         ('System Info', {
             'fields': ('date_created', 'ip_address'),
@@ -436,4 +627,4 @@ class DebtCorrectionAdmin(admin.ModelAdmin):
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        return qs.select_related('customer', 'staff_member')
+        return qs.select_related('customer')

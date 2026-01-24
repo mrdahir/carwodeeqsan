@@ -542,12 +542,7 @@
                     class="nav-item {% if request.resolver_match.url_name == 'customers_list' %}active{% endif %}">
                     <i class="fas fa-users"></i> Customers
                 </a>
-                {% if user.is_superuser %}
-                <a href="{% url 'core:staff_management' %}"
-                    class="nav-item {% if request.resolver_match.url_name == 'staff_management' %}active{% endif %}">
-                    <i class="fas fa-user-shield"></i> Staff
-                </a>
-                {% endif %}
+
             </div>
             <div class="mt-auto pt-4 border-top">
                 <div class="d-flex align-items-center justify-content-between px-2">

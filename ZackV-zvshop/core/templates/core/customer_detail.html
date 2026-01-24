@@ -81,7 +81,7 @@
                 <i class="fas fa-money-bill me-2"></i>Diwangeli deyn
             </a>
             {% endif %}
-            {% if user.is_superuser or user.is_staff %}
+            {% if user.is_superuser %}
             <a href="{% url 'core:edit_customer' customer.id %}" class="btn btn-info">
                 <i class="fas fa-user-edit me-2"></i>Macmil bedel
             </a>
@@ -236,7 +236,13 @@
                         <small class="text-muted">{{ payment.date_created|date:"M d, Y" }}</small>
                     </div>
                     <div class="text-end">
-                        <small class="text-muted">{{ payment.staff_member.username }}</small>
+                        <small class="text-muted">
+                            {% if payment.user %}
+                                {{ payment.user.get_full_name|default:payment.user.username }}
+                            {% else %}
+                                Admin
+                            {% endif %}
+                        </small>
                         {% if payment.notes %}
                         <br>
                         <small class="text-muted">{{ payment.notes|truncatechars:20 }}</small>
@@ -331,8 +337,13 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    <small>{{ sale.staff_member.get_full_name|default:sale.staff_member.username
-                                        }}</small>
+                                    <small>
+                                        {% if sale.user %}
+                                            {{ sale.user.get_full_name|default:sale.user.username }}
+                                        {% else %}
+                                            Admin
+                                        {% endif %}
+                                    </small>
                                 </td>
                                 <td>
                                     <a href="{% url 'core:sale_detail' sale.id %}"

@@ -110,7 +110,6 @@
                     <tr>
                         <th>Transaction ID</th>
                         <th>Customer</th>
-                        <th>Staff Member</th>
                         <th>Currency</th>
                         <th>Total Amount</th>
                         <th>Amount Paid</th>
@@ -130,9 +129,10 @@
                             <strong>{{ sale.customer.name }}</strong><br>
                             <small class="text-muted">{{ sale.customer.phone }}</small>
                         </td>
-                        <td>{{ sale.staff_member.get_full_name|default:sale.staff_member.username }}</td>
+
                         <td>
-                            <span class="badge {% if sale.currency == 'USD' %}bg-primary{% elif sale.currency == 'SOS' %}bg-success{% else %}bg-info{% endif %}">
+                            <span
+                                class="badge {% if sale.currency == 'USD' %}bg-primary{% elif sale.currency == 'SOS' %}bg-success{% else %}bg-info{% endif %}">
                                 {{ sale.currency }}
                             </span>
                         </td>
@@ -210,27 +210,28 @@
                 <li class="page-item active">
                     <span class="page-link">{{ num }}</span>
                 </li>
-                {% elif num > page_obj.number|add:'-3' and num < page_obj.number|add:'3' %}
-                <li class="page-item">
-                    <a class="page-link" href="?page={{ num }}{% if search %}&search={{ search }}{% endif %}{% if currency %}&currency={{ currency }}{% endif %}">{{ num }}</a>
-                </li>
-                {% endif %}
-                {% endfor %}
+                {% elif num > page_obj.number|add:'-3' and num < page_obj.number|add:'3' %} <li class="page-item">
+                    <a class="page-link"
+                        href="?page={{ num }}{% if search %}&search={{ search }}{% endif %}{% if currency %}&currency={{ currency }}{% endif %}">{{
+                        num }}</a>
+                    </li>
+                    {% endif %}
+                    {% endfor %}
 
-                {% if page_obj.has_next %}
-                <li class="page-item">
-                    <a class="page-link"
-                        href="?page={{ page_obj.next_page_number }}{% if search %}&search={{ search }}{% endif %}{% if currency %}&currency={{ currency }}{% endif %}">
-                        <i class="fas fa-angle-right"></i>
-                    </a>
-                </li>
-                <li class="page-item">
-                    <a class="page-link"
-                        href="?page={{ page_obj.paginator.num_pages }}{% if search %}&search={{ search }}{% endif %}{% if currency %}&currency={{ currency }}{% endif %}">
-                        <i class="fas fa-angle-double-right"></i>
-                    </a>
-                </li>
-                {% endif %}
+                    {% if page_obj.has_next %}
+                    <li class="page-item">
+                        <a class="page-link"
+                            href="?page={{ page_obj.next_page_number }}{% if search %}&search={{ search }}{% endif %}{% if currency %}&currency={{ currency }}{% endif %}">
+                            <i class="fas fa-angle-right"></i>
+                        </a>
+                    </li>
+                    <li class="page-item">
+                        <a class="page-link"
+                            href="?page={{ page_obj.paginator.num_pages }}{% if search %}&search={{ search }}{% endif %}{% if currency %}&currency={{ currency }}{% endif %}">
+                            <i class="fas fa-angle-double-right"></i>
+                        </a>
+                    </li>
+                    {% endif %}
             </ul>
         </nav>
         {% endif %}

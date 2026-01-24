@@ -134,10 +134,10 @@
     <form method="post" id="saleForm">
         {% csrf_token %}
 
-        <!-- Customer Selection Card -->
-        <div class="card">
+        <!-- Customer Selection Card - Hidden by default, shown only when debt > 0 -->
+        <div class="card" id="customerCard" style="display: none;">
             <div class="card-header">
-                <i class="fas fa-user me-2"></i>Macmiil
+                <i class="fas fa-user me-2"></i>Macmiil (Required for Credit Sale)
             </div>
             <div class="card-body">
                 <div class="row">
@@ -178,6 +178,18 @@
             </div>
         </div>
 
+        <!-- Add Customer Button - Shown only when debt > 0 -->
+        <div id="addCustomerButtonContainer" style="display: none;">
+            <div class="card">
+                <div class="card-body text-center">
+                    <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal"
+                        data-bs-target="#addCustomerModal">
+                        <i class="fas fa-plus me-2"></i>Add Customer (Required for Credit Sale)
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Currency Selection -->
         <div class="card">
             <div class="card-header">
@@ -185,24 +197,22 @@
             </div>
             <div class="card-body">
                 <div class="row">
-                    <div class="row">
-                        <div class="col-4">
-                            <div class="form-check">
-                                <input class="form-check-input" type="radio" name="currency" id="currencyUSD"
-                                    value="USD" checked>
-                                <label class="form-check-label" for="currencyUSD">
-                                    <strong>USD</strong> (US Dollar)
-                                </label>
-                            </div>
+                    <div class="col-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="currency" id="currencyETB" value="ETB"
+                                checked>
+                            <label class="form-check-label" for="currencyETB">
+                                <strong>ETB</strong> (Birr)
+                            </label>
                         </div>
                     </div>
-                </div>
-                <div class="col-4">
-                    <div class="form-check">
-                        <input class="form-check-input" type="radio" name="currency" id="currencyETB" value="ETB">
-                        <label class="form-check-label" for="currencyETB">
-                            <strong>ETB</strong> (Birr)
-                        </label>
+                    <div class="col-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="currency" id="currencyUSD" value="USD">
+                            <label class="form-check-label" for="currencyUSD">
+                                <strong>USD</strong> (US Dollar)
+                            </label>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -234,9 +244,6 @@
             <div class="input-group">
                 <input type="text" id="productSearch" class="form-control" placeholder="raadi badecadaha..."
                     autocomplete="off">
-                <button class="btn btn-outline-primary" type="button" onclick="openScannerForCreateSale()">
-                    <i class="fas fa-camera"></i>
-                </button>
             </div>
         </div>
 
@@ -352,7 +359,7 @@
 {% block extra_js %}
 <script>
     let selectedProducts = [];
-    let currentCurrency = 'USD';
+    let currentCurrency = 'ETB'; // ETB is the base currency
     let exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate|default:8000 }}') || 8000;
     let etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate|default:100 }}') || 100;
 
@@ -375,24 +382,29 @@
         // Set up amount paid handler
         document.getElementById('amountPaid').addEventListener('input', updateDebtAmount);
 
-        // Auto-focus on customer search
-        document.getElementById('customerSearch').focus();
+        // Auto-focus on product search (customer search is hidden by default)
+        document.getElementById('productSearch').focus();
 
         // Set up form submission handler
         document.getElementById('saleForm').addEventListener('submit', handleFormSubmission);
 
         // Initialize currency conversion
         convertPricesToCurrency();
+
+        // Initialize customer field visibility (hidden by default)
+        updateDebtAmount();
     });
 
     function setupCustomerSearch() {
         const searchInput = document.getElementById('customerSearch');
         const resultsDiv = document.getElementById('customerResults');
 
+        if (!searchInput) return; // Customer search may be hidden initially
+
         searchInput.addEventListener('input', function () {
             const query = this.value.trim();
             if (query.length < 2) {
-                resultsDiv.style.display = 'none';
+                if (resultsDiv) resultsDiv.style.display = 'none';
                 return;
             }
 
@@ -452,6 +464,8 @@
         const searchInput = document.getElementById('productSearch');
         const resultsDiv = document.getElementById('productResults');
 
+        if (!searchInput) return;
+
         searchInput.addEventListener('input', function () {
             const query = this.value.trim();
             if (query.length < 2) {
@@ -459,132 +473,30 @@
                 return;
             }
 
-            fetch(`/api/search-products/?q=${encodeURIComponent(query)}`)
-                .then(response => response.json())
-                .then(data => {
-                    displayProductResults(data);
-                })
-                .catch(error => {
-                    console.error('Error searching products:', error);
-                    showToast('Error searching products', 'error');
-                });
+            // Debounce search to avoid too many requests
+            clearTimeout(this.searchTimeout);
+            this.searchTimeout = setTimeout(() => {
+                fetch(`/api/search-products/?q=${encodeURIComponent(query)}`)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok');
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (Array.isArray(data)) {
+                            displayProductResults(data);
+                        } else {
+                            console.error('Invalid product search response:', data);
+                            showToast('Error: Invalid response from server', 'error');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error searching products:', error);
+                        showToast('Error searching products. Please try again.', 'error');
+                    });
+            }, 300); // 300ms debounce
         });
-    }
-
-    // ZXing scanner for create sale flow
-    let createSaleScanner = null;
-    let createSaleSelectedDeviceId = null;
-    function openScannerForCreateSale() {
-        const modalEl = document.getElementById('barcodeScannerModalCreateSale');
-        if (!modalEl) return;
-        // Prevent re-opening if already visible
-        if (modalEl.classList.contains('show')) return;
-        const modal = new bootstrap.Modal(modalEl, { backdrop: true, focus: true, keyboard: true });
-        modal.show();
-        // Preflight permission request to trigger browser prompt
-        setTimeout(() => {
-            requestCameraPermission()
-                .then(() => startCreateSaleScanner())
-                .catch(err => {
-                    showToast('Camera permission denied. Enable camera in site settings.', 'error');
-                });
-        }, 300);
-    }
-
-    function startCreateSaleScanner() {
-        const videoEl = document.getElementById('barcodeVideoCreateSale');
-        if (!window.ZXing) return;
-        if (createSaleScanner) {
-            stopCreateSaleScanner();
-        }
-        createSaleScanner = new ZXing.BrowserMultiFormatReader();
-        createSaleScanner.listVideoInputDevices()
-            .then(devices => {
-                populateCreateSaleCameras(devices);
-                let deviceId = createSaleSelectedDeviceId;
-                if (!deviceId) {
-                    // Prefer back/environ cameras if labels are available
-                    const backCam = devices.find(d => (d.label || '').toLowerCase().match(/back|rear|environment/));
-                    deviceId = backCam ? backCam.deviceId : (devices[devices.length - 1] && devices[devices.length - 1].deviceId);
-                }
-                if (!deviceId) return;
-                createSaleScanner.decodeFromVideoDevice(deviceId, videoEl, (result, err) => {
-                    if (result) {
-                        onCreateSaleBarcodeScanned(result.getText());
-                    }
-                });
-            })
-            .catch(err => console.error(err));
-    }
-
-    function stopCreateSaleScanner() {
-        try { if (createSaleScanner) createSaleScanner.reset(); } catch (e) { }
-    }
-
-    document.addEventListener('hidden.bs.modal', function (event) {
-        if (event.target && event.target.id === 'barcodeScannerModalCreateSale') {
-            stopCreateSaleScanner();
-            // Return focus to the product search field to avoid focus trapped in aria-hidden node
-            const ps = document.getElementById('productSearch');
-            if (ps) ps.focus();
-        }
-    });
-
-    function onCreateSaleBarcodeScanned(code) {
-        stopCreateSaleScanner();
-        const modalEl = document.getElementById('barcodeScannerModalCreateSale');
-        const modal = bootstrap.Modal.getInstance(modalEl);
-        // Blur active element before hiding to avoid aria-hidden focus warning
-        try { if (document.activeElement) document.activeElement.blur(); } catch (e) { }
-        if (modal) {
-            // Hide on next tick after blur
-            setTimeout(() => modal.hide(), 0);
-        }
-        fetch(`{% url 'core:api_lookup_by_barcode' %}?barcode=${encodeURIComponent(code)}`)
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    const p = data.product;
-                    addProductToSale(p.id, p.name, p.selling_price, p.current_stock);
-                    showToast('Product added by barcode', 'success');
-                } else {
-                    showToast(data.error || 'Product not found', 'error');
-                }
-            })
-            .catch(() => showToast('Failed to look up product by barcode', 'error'));
-    }
-
-    // Helper to explicitly trigger permission prompt
-    function requestCameraPermission() {
-        const constraints = { video: { facingMode: { ideal: 'environment' } } };
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            return Promise.reject(new Error('Camera API not supported'));
-        }
-        return navigator.mediaDevices.getUserMedia(constraints)
-            .then(stream => {
-                try { stream.getTracks().forEach(t => t.stop()); } catch (e) { }
-            });
-    }
-
-    function populateCreateSaleCameras(devices) {
-        const sel = document.getElementById('createSaleCameraSelect');
-        if (!sel) return;
-        // Only populate once per open
-        sel.innerHTML = '';
-        devices.forEach((d, idx) => {
-            const opt = document.createElement('option');
-            opt.value = d.deviceId;
-            opt.textContent = d.label || `Camera ${idx + 1}`;
-            sel.appendChild(opt);
-        });
-        // Preselect preferred camera
-        const backCam = devices.find(d => (d.label || '').toLowerCase().match(/back|rear|environment/));
-        createSaleSelectedDeviceId = createSaleSelectedDeviceId || (backCam ? backCam.deviceId : (devices[devices.length - 1] && devices[devices.length - 1].deviceId));
-        if (createSaleSelectedDeviceId) sel.value = createSaleSelectedDeviceId;
-        sel.onchange = function () {
-            createSaleSelectedDeviceId = this.value;
-            startCreateSaleScanner();
-        };
     }
 
     function displayProductResults(products) {
@@ -594,21 +506,30 @@
             resultsDiv.innerHTML = '<div class="list-group-item text-muted">No products found</div>';
         } else {
             resultsDiv.innerHTML = products.map(product => {
-                const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
-                const sosPrice = product.selling_price * exchangeRate;
+                const etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate|default:100 }}') || 100;
+                const etbPrice = product.selling_price * etbExchangeRate;
+                const unitLabel = product.selling_unit === 'METER' ? 'm' : 'pcs';
+                const unitInfo = product.selling_unit === 'METER' && product.minimum_sale_length
+                    ? ` (Min: ${product.minimum_sale_length}m)` : '';
+                // Escape product name for JavaScript
+                const escapedName = product.name.replace(/'/g, "\\'").replace(/"/g, '\\"');
+                const minLengthValue = product.minimum_sale_length !== null && product.minimum_sale_length !== undefined
+                    ? product.minimum_sale_length
+                    : 'null';
 
                 return `
             <div class="list-group-item list-group-item-action" 
-                 onclick="addProductToSale(${product.id}, '${product.name}', ${product.selling_price}, ${product.current_stock})">
+                 onclick="addProductToSale(${product.id}, '${escapedName}', ${product.selling_price}, ${product.current_stock}, '${product.selling_unit}', ${minLengthValue})">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
                         <strong>${product.name}</strong><br>
                         <small class="text-muted">${product.brand} • ${product.category}</small>
+                        <br><small class="text-info">Unit: ${unitLabel}${unitInfo}</small>
                     </div>
                     <div class="text-end">
-                        <div class="fw-bold">$${product.selling_price}</div>
-                        <div class="text-muted">${sosPrice.toFixed(0)} SOS</div>
-                        <small class="text-muted">Stock: ${product.current_stock}</small>
+                        <div class="fw-bold">${etbPrice.toFixed(2)} ETB</div>
+                        <div class="text-muted">$${product.selling_price} USD</div>
+                        <small class="text-muted">Stock: ${product.current_stock} ${unitLabel}</small>
                     </div>
                 </div>
             </div>
@@ -619,37 +540,59 @@
         resultsDiv.style.display = 'block';
     }
 
-    function addProductToSale(id, name, price, stock) {
+    function addProductToSale(id, name, price, stock, unitType, minLength) {
         // Check if product already exists
         const existingIndex = selectedProducts.findIndex(p => p.id === id);
 
         if (existingIndex >= 0) {
             // Increment quantity if stock allows
-            if (selectedProducts[existingIndex].quantity < stock) {
-                selectedProducts[existingIndex].quantity++;
+            const product = selectedProducts[existingIndex];
+            let increment = 1;
+
+            // For METER products, use minimum length if specified, otherwise 0.1
+            if (product.unitType === 'METER') {
+                increment = product.minLength ? parseFloat(product.minLength) : 0.1;
+            }
+
+            const newQuantity = product.quantity + increment;
+
+            if (newQuantity <= stock) {
+                product.quantity = newQuantity;
             } else {
                 showToast(`No more stock available for ${name}. Available: ${stock}`, 'error');
                 return;
             }
         } else {
             // Add new product
+            let initialQuantity = 1;
+
+            // For METER products, use minimum length if specified
+            if (unitType === 'METER' && minLength) {
+                initialQuantity = parseFloat(minLength);
+            }
+
             const newProduct = {
                 id: id,
                 name: name,
                 price: price,
-                stock: stock,
-                quantity: 1,
+                stock: parseFloat(stock),
+                quantity: initialQuantity,
+                unitType: unitType,
+                minLength: minLength ? parseFloat(minLength) : null,
                 priceInCurrency: price,
                 originalPrice: price
             };
 
-            // Convert price if SOS is selected
-            if (currentCurrency === 'SOS') {
-                const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
-                newProduct.priceInCurrency = price * exchangeRate;
-            } else if (currentCurrency === 'ETB') {
+            // Convert price based on selected currency (ETB is base, USD needs conversion)
+            if (currentCurrency === 'ETB') {
                 const etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate }}') || 100;
                 newProduct.priceInCurrency = price * etbExchangeRate;
+            } else if (currentCurrency === 'SOS') {
+                const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
+                newProduct.priceInCurrency = price * exchangeRate;
+            } else {
+                // USD - keep original price
+                newProduct.priceInCurrency = price;
             }
 
             selectedProducts.push(newProduct);
@@ -672,13 +615,24 @@
             return;
         }
 
+        const etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate|default:100 }}') || 100;
+
         container.innerHTML = selectedProducts.map((product, index) => {
             const priceInCurrency = product.priceInCurrency || product.price;
             const totalInCurrency = (priceInCurrency * product.quantity);
-            let currencySymbol = '$';
+            let currencySymbol = 'Birr';
+            if (currentCurrency === 'USD') currencySymbol = '$';
             if (currentCurrency === 'SOS') currencySymbol = 'So.Sh';
-            if (currentCurrency === 'ETB') currencySymbol = 'Birr';
             const originalPrice = product.originalPrice || product.price;
+            const unitLabel = product.unitType === 'METER' ? 'm' : 'pcs';
+            const quantityDisplay = product.unitType === 'METER'
+                ? product.quantity.toFixed(2)
+                : Math.floor(product.quantity);
+            const minQuantity = product.unitType === 'METER' && product.minLength
+                ? product.minLength
+                : (product.unitType === 'PIECE' || product.unitType === 'UNIT' ? 1 : 0.01);
+            const step = product.unitType === 'METER' ? 0.1 : 1;
+            const decrement = product.unitType === 'METER' ? 0.1 : 1;
 
             return `
         <div class="card mb-2">
@@ -687,18 +641,19 @@
                     <div class="flex-grow-1">
                         <div class="fw-bold">${product.name}</div>
                         <div class="text-muted">
-                            ${currencySymbol}${priceInCurrency.toFixed(2)} each
-                            ${currentCurrency !== 'USD' ? `<br><small class="text-muted">($${originalPrice} USD)</small>` : ''}
+                            ${currencySymbol}${priceInCurrency.toFixed(2)} per ${unitLabel}
+                            ${currentCurrency !== 'ETB' ? `<br><small class="text-muted">(${(originalPrice * parseFloat('{{ currency_settings.usd_to_etb_rate|default:100 }}') || 100).toFixed(2)} ETB)</small>` : ''}
+                            ${product.unitType === 'METER' && product.minLength ? `<br><small class="text-warning">Min: ${product.minLength}m</small>` : ''}
                         </div>
                     </div>
                     <div class="d-flex align-items-center gap-2">
                         <button type="button" class="btn btn-sm btn-outline-secondary" 
-                                onclick="updateQuantity(${index}, -1)" ${product.quantity <= 1 ? 'disabled' : ''}>
+                                onclick="updateQuantity(${index}, -${decrement})" ${product.quantity <= minQuantity ? 'disabled' : ''}>
                             <i class="fas fa-minus"></i>
                         </button>
-                        <span class="fw-bold" style="min-width: 30px; text-align: center;">${product.quantity}</span>
+                        <span class="fw-bold" style="min-width: 50px; text-align: center;">${quantityDisplay} ${unitLabel}</span>
                         <button type="button" class="btn btn-sm btn-outline-secondary" 
-                                onclick="updateQuantity(${index}, 1)" ${product.quantity >= product.stock ? 'disabled' : ''}>
+                                onclick="updateQuantity(${index}, ${step})" ${product.quantity >= product.stock ? 'disabled' : ''}>
                             <i class="fas fa-plus"></i>
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeProduct(${index})">
@@ -708,7 +663,7 @@
                 </div>
                 <div class="text-end mt-2">
                     <strong>Total: ${currencySymbol}${totalInCurrency.toFixed(2)}</strong>
-                    ${currentCurrency !== 'USD' ? `<br><small class="text-muted">($${(originalPrice * product.quantity).toFixed(2)} USD)</small>` : ''}
+                    ${currentCurrency !== 'ETB' ? `<br><small class="text-muted">(${((originalPrice * product.quantity) * parseFloat('{{ currency_settings.usd_to_etb_rate|default:100 }}') || 100).toFixed(2)} ETB)</small>` : ''}
                 </div>
             </div>
         </div>
@@ -720,15 +675,38 @@
 
     function updateQuantity(index, change) {
         const product = selectedProducts[index];
-        const newQuantity = product.quantity + change;
+        let newQuantity = product.quantity + change;
 
-        if (newQuantity >= 1 && newQuantity <= product.stock) {
-            product.quantity = newQuantity;
-            updateProductDisplay();
-            updateTotals();
-        } else if (newQuantity > product.stock) {
-            showToast(`Cannot exceed available stock of ${product.stock}`, 'error');
+        // Validate based on unit type
+        const minQuantity = product.unitType === 'METER' && product.minLength
+            ? product.minLength
+            : (product.unitType === 'PIECE' || product.unitType === 'UNIT' ? 1 : 0.01);
+
+        // For PIECE/UNIT products, ensure whole numbers
+        if (product.unitType === 'PIECE' || product.unitType === 'UNIT') {
+            newQuantity = Math.max(1, Math.floor(newQuantity));
         }
+
+        // For METER products, enforce minimum length
+        if (product.unitType === 'METER' && product.minLength && newQuantity < product.minLength) {
+            showToast(`Minimum length is ${product.minLength}m for this product`, 'error');
+            return;
+        }
+
+        // Validate stock
+        if (newQuantity < minQuantity) {
+            showToast(`Minimum quantity is ${minQuantity}`, 'error');
+            return;
+        }
+
+        if (newQuantity > product.stock) {
+            showToast(`Cannot exceed available stock of ${product.stock}`, 'error');
+            return;
+        }
+
+        product.quantity = newQuantity;
+        updateProductDisplay();
+        updateTotals();
     }
 
     function removeProduct(index) {
@@ -752,6 +730,24 @@
         const paid = parseFloat(document.getElementById('amountPaid').value) || 0;
         const debt = Math.max(0, total - paid);
         document.getElementById('debtAmount').value = debt.toFixed(2);
+
+        // Show/hide customer field based on debt
+        const customerCard = document.getElementById('customerCard');
+        const addCustomerButton = document.getElementById('addCustomerButtonContainer');
+
+        // Validation: Customer is ONLY required if there is debt
+        // Use a small threshold to avoid floating point issues
+        if (debt > 0.01) {
+            // Show customer field when there's debt
+            if (customerCard) customerCard.style.display = 'block';
+            if (addCustomerButton) addCustomerButton.style.display = 'block';
+        } else {
+            // Hide customer field when fully paid
+            if (customerCard) customerCard.style.display = 'none';
+            if (addCustomerButton) addCustomerButton.style.display = 'none';
+            // Clear customer if fully paid to avoid accidental association
+            clearCustomer();
+        }
     }
 
     function setFullPayment() {
@@ -761,11 +757,11 @@
     }
 
     function updateCurrencySymbols() {
-        let symbol = '$';
-        if (currentCurrency === 'SOS') {
+        let symbol = 'Birr';
+        if (currentCurrency === 'USD') {
+            symbol = '$';
+        } else if (currentCurrency === 'SOS') {
             symbol = 'So.Sh';
-        } else if (currentCurrency === 'ETB') {
-            symbol = 'Birr';
         }
         document.getElementById('currencySymbol').textContent = symbol;
         document.getElementById('paidCurrencySymbol').textContent = symbol;
@@ -773,22 +769,23 @@
     }
 
     function convertPricesToCurrency() {
-        // Get exchange rate from the page
+        // Get exchange rates from the page
         const exchangeRate = parseFloat('{{ currency_settings.usd_to_sos_rate }}') || 8000;
+        const etbExchangeRate = parseFloat('{{ currency_settings.usd_to_etb_rate }}') || 100;
 
         // Update all product prices based on selected currency
-        // Update all product prices based on selected currency
+        // ETB is base currency, so convert from USD to ETB
         selectedProducts.forEach(product => {
-            if (currentCurrency === 'SOS') {
+            if (currentCurrency === 'ETB') {
+                // Convert USD price to ETB (base currency)
+                product.priceInCurrency = product.price * etbExchangeRate;
+                product.originalPrice = product.price; // Keep original USD price
+            } else if (currentCurrency === 'SOS') {
                 // Convert USD price to SOS
                 product.priceInCurrency = product.price * exchangeRate;
                 product.originalPrice = product.price; // Keep original USD price
-            } else if (currentCurrency === 'ETB') {
-                // Convert USD price to ETB
-                product.priceInCurrency = product.price * etbExchangeRate;
-                product.originalPrice = product.price; // Keep original USD price
             } else {
-                // Use original USD price
+                // USD - use original USD price
                 product.priceInCurrency = product.price;
                 product.originalPrice = product.price;
             }
@@ -843,17 +840,22 @@
     function handleFormSubmission(e) {
         e.preventDefault();
 
-        // Perform validation here
-        const customerId = document.getElementById('customerId').value;
-        if (!customerId) {
-            showToast('Please select a customer first', 'error');
-            document.getElementById('customerSearch').focus();
-            return;
-        }
-
+        // Validate products
         if (selectedProducts.length === 0) {
             showToast('Please add at least one product', 'error');
             document.getElementById('productSearch').focus();
+            return;
+        }
+
+        // Validate customer - only required if there's debt (incomplete payment)
+        const total = parseFloat(document.getElementById('totalAmount').value) || 0;
+        const paid = parseFloat(document.getElementById('amountPaid').value) || 0;
+        const debt = Math.max(0, total - paid);
+        const customerId = document.getElementById('customerId').value;
+
+        if (debt > 0 && !customerId) {
+            showToast('Credit sales require a customer. Please select a customer or pay the full amount.', 'error');
+            document.getElementById('customerSearch').focus();
             return;
         }
 
@@ -865,7 +867,10 @@
         // Prepare form data
         const formData = new FormData();
         formData.append('csrfmiddlewaretoken', document.querySelector('[name=csrfmiddlewaretoken]').value);
-        formData.append('customer', document.getElementById('customerId').value);
+        // Customer is optional - only include if selected
+        if (customerId) {
+            formData.append('customer', customerId);
+        }
         formData.append('currency', document.querySelector('input[name="currency"]:checked').value);
         formData.append('amount_paid', document.getElementById('amountPaid').value);
 
@@ -873,10 +878,8 @@
         selectedProducts.forEach((product, index) => {
             formData.append(`products[${index}][id]`, product.id);
             formData.append(`products[${index}][quantity]`, product.quantity);
-            // Send the converted unit price for SOS and ETB currencies
-            if (currentCurrency === 'SOS' || currentCurrency === 'ETB') {
-                formData.append(`products[${index}][unit_price]`, product.priceInCurrency);
-            }
+            // Send the converted unit price for all currencies (ETB is base)
+            formData.append(`products[${index}][unit_price]`, product.priceInCurrency);
         });
 
         // Submit via fetch
@@ -960,69 +963,5 @@
         window.addEventListener('scroll', handleScroll);
         handleScroll(); // Initial check
     });
-</script>
-<!-- Scanner Modal for Create Sale -->
-<div class="modal fade" id="barcodeScannerModalCreateSale" tabindex="-1" role="dialog" aria-modal="true"
-    aria-hidden="true" aria-labelledby="barcodeScannerCreateSaleTitle">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="barcodeScannerCreateSaleTitle"><i class="fas fa-barcode me-2"></i>Scan
-                    Product</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="ratio ratio-4x3 border rounded">
-                    <video id="barcodeVideoCreateSale" autoplay muted playsinline></video>
-                </div>
-                <small class="text-muted d-block mt-2">Align the barcode within the frame.</small>
-            </div>
-            <div class="modal-footer">
-                <div class="me-auto d-flex align-items-center gap-2">
-                    <label for="createSaleCameraSelect" class="form-label mb-0"><small>Camera</small></label>
-                    <select id="createSaleCameraSelect" class="form-select form-select-sm"
-                        style="width:auto; min-width: 160px;"></select>
-                </div>
-                <button type="button" class="btn btn-outline-secondary" onclick="startCreateSaleScanner()"><i
-                        class="fas fa-sync-alt me-2"></i>Restart</button>
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
-        </div>
-    </div>
-</div>
-<script src="https://unpkg.com/@zxing/library@latest"></script>
-<script>
-    // ARIA and focus management for Create Sale scanner modal
-    (() => {
-        const modalEl = document.getElementById('barcodeScannerModalCreateSale');
-        let lastTrigger = null;
-        if (!modalEl) return;
-        modalEl.addEventListener('show.bs.modal', () => {
-            // Remember trigger and ensure modal is not aria-hidden while open
-            lastTrigger = document.activeElement;
-            modalEl.removeAttribute('aria-hidden');
-            modalEl.setAttribute('aria-modal', 'true');
-            modalEl.setAttribute('role', 'dialog');
-        });
-        modalEl.addEventListener('shown.bs.modal', () => {
-            // Move focus inside modal (close button preferred)
-            const closeBtn = modalEl.querySelector('.btn-close');
-            if (closeBtn) {
-                try { closeBtn.focus(); } catch (e) { }
-            } else {
-                try { modalEl.focus(); } catch (e) { }
-            }
-        });
-        modalEl.addEventListener('hide.bs.modal', () => {
-            // Blur any focused element inside the modal prior to hiding
-            try { if (document.activeElement) document.activeElement.blur(); } catch (e) { }
-        });
-        modalEl.addEventListener('hidden.bs.modal', () => {
-            // When closed, set aria-hidden, remove aria-modal, and restore focus to trigger
-            modalEl.setAttribute('aria-hidden', 'true');
-            modalEl.removeAttribute('aria-modal');
-            try { if (lastTrigger && typeof lastTrigger.focus === 'function') lastTrigger.focus(); } catch (e) { }
-        });
-    })();
 </script>
 {% endblock %}

@@ -10,7 +10,7 @@
     </h1>
     <div class="btn-toolbar mb-2 mb-md-0">
         <div class="btn-group me-2">
-            <a href="{% url 'core:add_sale_item' sale.id %}" class="btn btn-primary">
+            <a href="{% url 'core:add_sale_item' sale_type sale.id %}" class="btn btn-primary">
                 <i class="fas fa-plus me-2"></i>Add Item
             </a>
             <a href="{% url 'core:sales_list' %}" class="btn btn-outline-secondary">
@@ -42,8 +42,8 @@
                 </div>
 
                 <div class="mb-3">
-                    <strong>Staff Member:</strong><br>
-                    <span>{{ sale.staff_member.get_full_name|default:sale.staff_member.username }}</span>
+                    <strong>Processed By:</strong><br>
+                    <span>{{ sale.user.get_full_name|default:sale.user.username }}</span>
                 </div>
 
                 <div class="mb-3">
@@ -53,7 +53,6 @@
                 </div>
 
                 <div class="mb-3">
-                    <strong>Sale Type:</strong><br>
                     <strong>Sale Type:</strong><br>
                     <span
                         class="badge {% if sale_type == 'USD' %}bg-primary{% elif sale_type == 'SOS' %}bg-success{% elif sale_type == 'ETB' %}bg-info{% else %}bg-secondary{% endif %}">
@@ -65,8 +64,7 @@
                     <strong>Currency:</strong><br>
                     <span
                         class="badge {% if sale_type == 'USD' or sale.currency == 'USD' %}bg-primary{% elif sale_type == 'SOS' or sale.currency == 'SOS' %}bg-success{% elif sale_type == 'ETB' %}bg-info{% else %}bg-secondary{% endif %}">
-                        {% if sale_type == 'USD' %}USD{% elif sale_type == 'SOS' %}SOS{% elif sale_type == 'ETB' %}ETB{%
-                        else %}{{ sale.currency }}{% endif %}
+                        {{ sale_type }}
                     </span>
                 </div>
 
@@ -203,7 +201,7 @@
                     <i class="fas fa-shopping-cart fa-3x text-muted mb-3"></i>
                     <h5 class="text-muted">No items in this sale</h5>
                     <p class="text-muted">Add items to complete the sale.</p>
-                    <a href="{% url 'core:add_sale_item' sale.id %}" class="btn btn-primary">
+                    <a href="{% url 'core:add_sale_item' sale_type sale.id %}" class="btn btn-primary">
                         <i class="fas fa-plus me-2"></i>Add Item
                     </a>
                 </div>
@@ -235,11 +233,13 @@
                             </span>
                         </p>
                     </div>
+                    {% if sale.customer %}
                     <div class="col-md-6 text-end">
                         <a href="{% url 'core:record_debt_payment' sale.customer.id %}" class="btn btn-success">
                             <i class="fas fa-money-bill me-2"></i>Record Payment
                         </a>
                     </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -255,15 +255,17 @@
             <div class="card-body">
                 <div class="row">
                     <div class="col-md-4">
-                        <a href="{% url 'core:add_sale_item' sale.id %}" class="btn btn-primary w-100 mb-2">
+                        <a href="{% url 'core:add_sale_item' sale_type sale.id %}" class="btn btn-primary w-100 mb-2">
                             <i class="fas fa-plus me-2"></i>Add Item
                         </a>
                     </div>
                     <div class="col-md-4">
+                        {% if sale.customer %}
                         <a href="{% url 'core:customer_detail' sale.customer.id %}"
                             class="btn btn-outline-info w-100 mb-2">
                             <i class="fas fa-user me-2"></i>View Customer
                         </a>
+                        {% endif %}
                     </div>
                     <div class="col-md-4">
                         <a href="{% url 'core:sales_list' %}" class="btn btn-outline-secondary w-100 mb-2">
